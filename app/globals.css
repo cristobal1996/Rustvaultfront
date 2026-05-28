@@ -1,0 +1,69 @@
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg:           #171311;
+  --bg-elev:      #1f1a16;
+  --line:         #2d251f;
+  --line-2:       #3a3027;
+  --ivory:        #f2ebe1;
+  --ivory-dim:    #c8bfb1;
+  --muted:        #8a8074;
+  --rust:         oklch(0.62 0.13 45);
+  --rust-deep:    oklch(0.48 0.13 40);
+  --rust-bright:  oklch(0.74 0.14 55);
+  --patina:       oklch(0.58 0.06 170);
+
+  --font-serif: "Instrument Serif", serif;
+  --font-sans:  "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin:     0;
+  padding:    0;
+  background: var(--bg);
+  color:      var(--ivory);
+}
+
+body {
+  font-family:             var(--font-sans);
+  font-weight:             400;
+  -webkit-font-smoothing:  antialiased;
+  overflow-x:              hidden;
+}
+
+a  { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; }
+
+/* ── Vault animation ─────────────────────────────────────────── */
+.vault-spokes {
+  transition: transform 600ms cubic-bezier(.2, .7, .2, 1);
+}
+.vault-unlocked .vault-spokes {
+  transform: rotate(45deg);
+}
+.vault-unlocked .vault-door {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 220, 180, 0.15),
+    inset 0 -20px 40px rgba(0, 0, 0, 0.3),
+    0 0 60px color-mix(in oklab, var(--rust) 40%, transparent);
+}
+
+/* ── Pulse animation ─────────────────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+.animate-pulse-slow {
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }

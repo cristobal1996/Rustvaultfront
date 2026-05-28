@@ -1,0 +1,25 @@
+# Dependencias
+node_modules/
+
+# Next.js build
+.next/
+out/
+
+# Variables de entorno — contienen secretos
+.env
+.env.local
+.env.production
+.env.development.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
