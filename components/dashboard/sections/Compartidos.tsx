@@ -301,15 +301,56 @@ export function Compartidos({ token: tokenProp }: Props) {
       const data = await res.json()
       if (!res.ok) return
 
-      // El blob está cifrado con nuestra clave privada X25519
-      // Por simplicidad del proyecto, si tenemos la MUK intentamos descifrar con AES
-      // En una implementación completa se usaría la clave privada X25519 almacenada
       const blob = data.encrypted
-      if (blob?.nonce && blob?.ciphertext) {
-        const plain = await aesDecrypt(blob, mukHex)
-        if (plain) setViewContent(new TextDecoder().decode(plain))
+      if (!blob?.ephemeral_pub) return
+
+      // 1. Obtener clave privada cifrada del perfil
+      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      if (!profile.encrypted_priv_key) return
+
+      // 2. Descifrar clave privada con MUK
+      const privKeyBytes = await aesDecrypt(profile.encrypted_priv_key, mukHex)
+      if (!privKeyBytes) return
+
+      // 3. Importar clave privada PKCS8
+      const privateKey = await crypto.subtle.importKey(
+        "pkcs8", privKeyBytes,
+        { name: "ECDH", namedCurve: "P-256" },
+        false, ["deriveBits"]
+      )
+
+      // 4. ECDH con la clave pública efímera
+      const ephemeralKey = await crypto.subtle.importKey(
+        "raw", hexToBytes(blob.ephemeral_pub),
+        { name: "ECDH", namedCurve: "P-256" },
+        false, []
+      )
+
+      const sharedBits = await crypto.subtle.deriveBits(
+        { name: "ECDH", public: ephemeralKey },
+        privateKey, 256
+      )
+
+      // 5. HKDF → clave AES
+      const hkdfKey = await crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveBits"])
+      const aesBits  = await crypto.subtle.deriveBits(
+        { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: new TextEncoder().encode("rustvault-sharing-v1") },
+        hkdfKey, 256
+      )
+
+      // 6. Descifrar contenido
+      const plain = await aesDecrypt({ nonce: blob.nonce, ciphertext: blob.ciphertext }, bytesToHex(new Uint8Array(aesBits)))
+      if (plain) {
+        try {
+          const content = JSON.parse(new TextDecoder().decode(plain))
+          setViewContent(JSON.stringify(content, null, 2))
+        } catch {
+          setViewContent(new TextDecoder().decode(plain))
+        }
       }
-    } catch {}
+    } catch (e) {
+      console.error("viewShared error:", e)
+    }
   }
 
   async function acceptShare(id: string) {

@@ -30,6 +30,11 @@ function LoginForm() {
   const [error,    setError]    = useState<string | null>(null)
   const [step,     setStep]     = useState<"idle" | "auth" | "deriving">("idle")
 
+  // Estado 2FA
+  const [needs2FA,    setNeeds2FA]    = useState(false)
+  const [totpCode,    setTotpCode]    = useState("")
+  const [pendingData, setPendingData] = useState<{ token: string; srp_salt: string; user: { id: string; email: string } } | null>(null)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -56,27 +61,72 @@ function LoginForm() {
         return
       }
 
-      // 2. Derivar la MUK con la contraseña y el srp_salt del servidor
-      setStep("deriving")
-      const mukHex = await deriveMUK(password, data.srp_salt)
+      // 2. Si requiere 2FA — guardar datos pendientes y mostrar el paso
+      if (data.requires_2fa) {
+        setPendingData({ token: data.token, srp_salt: data.srp_salt, user: data.user })
+        setNeeds2FA(true)
+        setLoading(false)
+        setStep("idle")
+        return
+      }
 
-      // 3. Guardar MUK en sessionStorage y token en localStorage
-      saveMUK(mukHex)
-      localStorage.setItem("rv_token",    data.token)
-      localStorage.setItem("rv_srp_salt", data.srp_salt)
-      localStorage.setItem("rv_user_id",  data.user.id)
-      localStorage.setItem("rv_email",    data.user.email)
-      localStorage.setItem("rv_muk",      mukHex)
-      window.postMessage({ type: "RUSTVAULT_MUK", mukHex }, "*")
+      // 3. Sin 2FA — continuar con el flujo normal
+      await completarLogin(data)
 
-      // 4. Ir al dashboard
-      router.push("/dashboard")
     } catch {
       setError("Error de conexión con el servidor")
     } finally {
       setLoading(false)
       setStep("idle")
     }
+  }
+
+  async function handleVerify2FA(e: React.FormEvent) {
+    e.preventDefault()
+    if (!pendingData || totpCode.length !== 6) return
+    setLoading(true)
+    setError(null)
+
+    try {
+      // Verificar el código TOTP con el servidor
+      const res = await fetch("/api/auth/login", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          email,
+          password,
+          totp_code:   totpCode,
+          device_name: "Navegador web",
+          platform:    "web",
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) {
+        setError("Código incorrecto — inténtalo de nuevo")
+        return
+      }
+
+      await completarLogin(data)
+
+    } catch {
+      setError("Error de conexión")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function completarLogin(data: { token: string; srp_salt: string; user: { id: string; email: string } }) {
+    setStep("deriving")
+    const mukHex = await deriveMUK(password, data.srp_salt)
+    saveMUK(mukHex)
+    localStorage.setItem("rv_token",    data.token)
+    localStorage.setItem("rv_srp_salt", data.srp_salt)
+    localStorage.setItem("rv_user_id",  data.user.id)
+    localStorage.setItem("rv_email",    data.user.email)
+    localStorage.setItem("rv_muk",      mukHex)
+    window.postMessage({ type: "RUSTVAULT_MUK", mukHex }, "*")
+    router.push("/dashboard")
   }
 
   const stepLabel = step === "auth" ? "Verificando credenciales…" : step === "deriving" ? "Derivando clave maestra…" : "Entrar a la bóveda"
@@ -87,6 +137,53 @@ function LoginForm() {
     color: "var(--ivory)", outline: "none", transition: "border-color 160ms ease",
     boxSizing: "border-box",
   }
+
+  // ── Pantalla de verificación 2FA ──────────────────────────────
+  if (needs2FA) return (
+    <div style={{ width: "100%", maxWidth: "380px" }}>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "28px" }}>
+        <div style={{ width: "72px", height: "72px", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, oklch(0.74 0.14 55), oklch(0.62 0.13 45) 50%, oklch(0.48 0.13 40))", display: "grid", placeItems: "center" }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(20,15,10,0.7)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="5" y="11" width="14" height="10" rx="2"/>
+            <path d="M8 11V7a4 4 0 018 0v4"/>
+          </svg>
+        </div>
+      </div>
+
+      <h1 style={{ fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: "28px", textAlign: "center", margin: "0 0 6px", color: "var(--ivory)" }}>
+        Verificación 2FA
+      </h1>
+      <p style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--muted)", textAlign: "center", margin: "0 0 32px", lineHeight: "1.6" }}>
+        Abre tu app autenticadora e introduce<br/>el código de 6 dígitos
+      </p>
+
+      {error && (
+        <div style={{ background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.2)", borderRadius: "10px", padding: "12px 14px", fontSize: "13px", color: "#f87171", marginBottom: "16px", textAlign: "center" }}>
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleVerify2FA} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <input
+          type="tel"
+          placeholder="000000"
+          value={totpCode}
+          onChange={e => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          maxLength={6}
+          autoFocus
+          style={{ width: "100%", background: "var(--bg)", border: "1px solid var(--line-2)", borderRadius: "10px", padding: "16px", fontSize: "32px", fontFamily: "var(--font-mono)", letterSpacing: "0.4em", textAlign: "center", color: "var(--ivory)", outline: "none", boxSizing: "border-box" }}
+        />
+        <button type="submit" disabled={loading || totpCode.length !== 6}
+          style={{ width: "100%", background: totpCode.length === 6 ? "var(--rust)" : "var(--rust-deep)", color: "#fff", border: "none", borderRadius: "10px", padding: "14px", fontSize: "15px", fontWeight: 500, cursor: totpCode.length === 6 ? "pointer" : "not-allowed" }}>
+          {loading ? "Verificando…" : "Verificar código"}
+        </button>
+        <button type="button" onClick={() => { setNeeds2FA(false); setPendingData(null); setTotpCode(""); setError(null) }}
+          style={{ background: "transparent", border: "none", color: "var(--muted)", fontSize: "13px", cursor: "pointer", fontFamily: "var(--font-mono)" }}>
+          ← Volver al login
+        </button>
+      </form>
+    </div>
+  )
 
   return (
     <div style={{ width: "100%", maxWidth: "420px" }}>
