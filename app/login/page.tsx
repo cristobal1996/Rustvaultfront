@@ -116,7 +116,7 @@ function LoginForm() {
     }
   }
 
-  async function completarLogin(data: { token: string; srp_salt: string; user: { id: string; email: string } }) {
+  async function completarLogin(data: { token: string; srp_salt: string; user: { id: string; email: string; pub_key?: string } }) {
     setStep("deriving")
     const mukHex = await deriveMUK(password, data.srp_salt)
     saveMUK(mukHex)
@@ -126,6 +126,37 @@ function LoginForm() {
     localStorage.setItem("rv_email",    data.user.email)
     localStorage.setItem("rv_muk",      mukHex)
     window.postMessage({ type: "RUSTVAULT_MUK", mukHex }, "*")
+
+    // Generar recovery_blob si el usuario no lo tiene todavía
+    try {
+      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${data.token}` } }).then(r => r.json())
+      if (!profile.recovery_blob) {
+        const rkBytes  = crypto.getRandomValues(new Uint8Array(32))
+        const rkKey    = await crypto.subtle.importKey("raw", rkBytes, { name: "AES-GCM" }, false, ["encrypt"])
+        const nonce    = crypto.getRandomValues(new Uint8Array(12))
+        const mukBytes = new Uint8Array(mukHex.length / 2)
+        for (let i = 0; i < mukHex.length; i += 2) mukBytes[i/2] = parseInt(mukHex.slice(i, i+2), 16)
+        const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, rkKey, mukBytes)
+
+        const rkHex = Array.from(rkBytes).map(b => b.toString(16).padStart(2,"0")).join("")
+        const blob  = {
+          nonce:      Array.from(nonce).map(b => b.toString(16).padStart(2,"0")).join(""),
+          ciphertext: Array.from(new Uint8Array(ct)).map(b => b.toString(16).padStart(2,"0")).join(""),
+        }
+
+        await fetch("/api/auth/recover/save-blob", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
+          body:    JSON.stringify({ recovery_blob: blob }),
+        })
+
+        // Guardar la Recovery Key en localStorage para que el usuario pueda verla
+        localStorage.setItem("rv_recovery_key_new", rkHex)
+      }
+    } catch (e) {
+      console.warn("No se pudo generar recovery blob:", e)
+    }
+
     router.push("/dashboard")
   }
 

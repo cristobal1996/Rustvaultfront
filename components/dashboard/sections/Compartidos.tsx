@@ -151,7 +151,7 @@ export function Compartidos({ token: tokenProp }: Props) {
 
   // Detalle de inbox
   const [viewItem,    setViewItem]    = useState<InboxItem | null>(null)
-  const [viewContent, setViewContent] = useState<string | null>(null)
+  const [viewContent, setViewContent] = useState<Record<string, string> | string | null>(null)
   const [accepting,   setAccepting]   = useState(false)
   const [actionMsg,   setActionMsg]   = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -343,7 +343,7 @@ export function Compartidos({ token: tokenProp }: Props) {
       if (plain) {
         try {
           const content = JSON.parse(new TextDecoder().decode(plain))
-          setViewContent(JSON.stringify(content, null, 2))
+          setViewContent(content)
         } catch {
           setViewContent(new TextDecoder().decode(plain))
         }
@@ -577,11 +577,46 @@ export function Compartidos({ token: tokenProp }: Props) {
 
               {/* Vista del contenido */}
               {viewItem?.id === item.id && viewContent && (
-                <div style={{ marginTop: "12px", padding: "12px", background: "var(--bg)", borderRadius: "8px", border: "1px solid var(--line-2)" }}>
-                  <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 8px" }}>Contenido descifrado</p>
-                  <pre style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--ivory-dim)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                    {viewContent}
-                  </pre>
+                <div style={{ marginTop: "12px", padding: "14px 16px", background: "var(--bg)", borderRadius: "10px", border: "1px solid var(--line-2)" }}>
+                  <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 12px" }}>Contraseña compartida</p>
+                  {typeof viewContent === "string" ? (
+                    <pre style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--ivory-dim)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{viewContent}</pre>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {viewContent.url && (
+                        <Row label="URL" value={viewContent.url}>
+                          <a href={viewContent.url.startsWith("http") ? viewContent.url : `https://${viewContent.url}`}
+                             target="_blank" rel="noopener noreferrer"
+                             style={{ color: "var(--rust-bright)", fontFamily: "var(--font-mono)", fontSize: "13px", textDecoration: "none", wordBreak: "break-all" }}>
+                            {viewContent.url} ↗
+                          </a>
+                        </Row>
+                      )}
+                      {viewContent.username && (
+                        <Row label="Usuario" value={viewContent.username}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--ivory)", wordBreak: "break-all" }}>{viewContent.username}</span>
+                          <CopyBtn text={viewContent.username} />
+                        </Row>
+                      )}
+                      {viewContent.password && (
+                        <Row label="Contraseña" value={viewContent.password}>
+                          <PasswordField value={viewContent.password} />
+                        </Row>
+                      )}
+                      {viewContent.notes && (
+                        <Row label="Notas" value={viewContent.notes}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--ivory-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{viewContent.notes}</span>
+                        </Row>
+                      )}
+                      {Object.entries(viewContent)
+                        .filter(([k]) => !["url","username","password","notes"].includes(k))
+                        .map(([k, v]) => (
+                          <Row key={k} label={k} value={String(v)}>
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--ivory-dim)", wordBreak: "break-all" }}>{String(v)}</span>
+                          </Row>
+                        ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -738,5 +773,61 @@ export function Compartidos({ token: tokenProp }: Props) {
         </div>
       )}
     </div>
+  )
+}
+
+// ── Componentes auxiliares para mostrar la contraseña compartida ──
+
+function Row({ label, children }: { label: string; value: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1.2px", textTransform: "uppercase", color: "var(--muted)" }}>
+        {label}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={async () => {
+        await navigator.clipboard.writeText(text)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+      style={{
+        background: "transparent", border: "1px solid var(--line-2)",
+        borderRadius: "6px", padding: "4px 10px", fontSize: "10px",
+        color: copied ? "#10b981" : "var(--muted)", cursor: "pointer",
+        fontFamily: "var(--font-mono)", letterSpacing: "0.5px",
+      }}>
+      {copied ? "✓ Copiado" : "Copiar"}
+    </button>
+  )
+}
+
+function PasswordField({ value }: { value: string }) {
+  const [shown, setShown] = useState(false)
+  return (
+    <>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--ivory)", wordBreak: "break-all", letterSpacing: shown ? "normal" : "2px" }}>
+        {shown ? value : "•".repeat(Math.min(value.length, 16))}
+      </span>
+      <button onClick={() => setShown(!shown)}
+        style={{
+          background: "transparent", border: "1px solid var(--line-2)",
+          borderRadius: "6px", padding: "4px 10px", fontSize: "10px",
+          color: "var(--muted)", cursor: "pointer",
+          fontFamily: "var(--font-mono)", letterSpacing: "0.5px",
+        }}>
+        {shown ? "Ocultar" : "Mostrar"}
+      </button>
+      <CopyBtn text={value} />
+    </>
   )
 }
