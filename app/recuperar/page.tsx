@@ -28,7 +28,7 @@ export default function Recuperar() {
   const [userId,       setUserId]       = useState("")
   const [userEmail,    setUserEmail]    = useState("")
 
-  // ── PASO 1: pedir el blob por email ───────────────────────────
+  // ── PASO 1: pedir el blob por email ─────────────────────────────────
   async function handleEmail(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -52,7 +52,7 @@ export default function Recuperar() {
     } finally { setLoading(false) }
   }
 
-  // ── PASO 2: descifrar MUK con la Recovery Key ────────────────
+  // ── PASO 2: descifrar MUK con la Recovery Key ───────────────────────
   async function handleKey(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -91,7 +91,7 @@ export default function Recuperar() {
     } finally { setLoading(false) }
   }
 
-  // ── PASO 3: nueva contraseña + re-cifrado ────────────────────
+  // ── PASO 3: nueva contraseña + re-cifrado ───────────────────────────
   async function handleNewPass(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -164,12 +164,15 @@ export default function Recuperar() {
         })
       }
 
-      // 6. Generar nuevo recovery blob con la MUK nueva
-      const rkBytes = crypto.getRandomValues(new Uint8Array(32))
-      const rkHex   = bytesToHex(rkBytes)
-      const rkKey   = await crypto.subtle.importKey("raw", rkBytes, { name: "AES-GCM" }, false, ["encrypt"])
-      const nonce   = crypto.getRandomValues(new Uint8Array(12))
-      const mukCt   = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, rkKey, hexToBytes(newMukHex))
+      // ─────────────────────────────────────────────────────────────
+      // 6. Regenerar recovery_blob USANDO LA MISMA RECOVERY KEY
+      //    (la que el usuario acaba de introducir y validar)
+      //    Así la Recovery Key original sigue siendo válida para siempre.
+      // ─────────────────────────────────────────────────────────────
+      const sameRkBytes = hexToBytes(recoveryKey.replace(/[\s-]/g, "").toLowerCase())
+      const rkKey       = await crypto.subtle.importKey("raw", sameRkBytes, { name: "AES-GCM" }, false, ["encrypt"])
+      const nonce       = crypto.getRandomValues(new Uint8Array(12))
+      const mukCt       = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, rkKey, hexToBytes(newMukHex))
       const recoveryBlob = {
         nonce:      bytesToHex(nonce),
         ciphertext: bytesToHex(new Uint8Array(mukCt)),
@@ -228,7 +231,6 @@ export default function Recuperar() {
           </div>
         )}
 
-        {/* ── Paso 1: email ── */}
         {step === "email" && (
           <form onSubmit={handleEmail} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
@@ -242,7 +244,6 @@ export default function Recuperar() {
           </form>
         )}
 
-        {/* ── Paso 2: Recovery Key ── */}
         {step === "key" && (
           <form onSubmit={handleKey} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
@@ -260,7 +261,6 @@ export default function Recuperar() {
           </form>
         )}
 
-        {/* ── Paso 3: nueva contraseña ── */}
         {step === "newpass" && (
           <form onSubmit={handleNewPass} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <p style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "#10b981", margin: 0 }}>
@@ -285,14 +285,14 @@ export default function Recuperar() {
           </form>
         )}
 
-        {/* ── Paso 4: hecho ── */}
         {step === "done" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <div style={{ border: "1px solid rgba(16,185,129,0.3)", borderRadius: "12px", padding: "18px", background: "rgba(16,185,129,0.04)" }}>
               <p style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "#10b981", margin: 0, lineHeight: "1.6" }}>
                 ✓ Cuenta recuperada<br/>
                 ✓ Contraseña cambiada<br/>
-                ✓ Contraseñas re-cifradas con la nueva MUK
+                ✓ Contraseñas re-cifradas con la nueva MUK<br/>
+                ✓ Tu Recovery Key original sigue siendo válida
               </p>
             </div>
             <button onClick={() => router.push("/dashboard")}
