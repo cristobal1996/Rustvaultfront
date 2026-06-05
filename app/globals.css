@@ -21,32 +21,99 @@
   --font-mono:  "JetBrains Mono", ui-monospace, monospace;
 }
 
-*, *::before, *::after { box-sizing: border-box; }
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
 
-html, body {
-  margin:     0;
-  padding:    0;
-  background: var(--bg);
-  color:      var(--ivory);
+  html, body {
+    margin:     0;
+    padding:    0;
+    background: var(--bg);
+    color:      var(--ivory);
+  }
+
+  body {
+    font-family:             var(--font-sans);
+    font-weight:             400;
+    -webkit-font-smoothing:  antialiased;
+    overflow-x:              hidden;
+  }
+
+  a      { color: inherit; text-decoration: none; }
+  button { font:  inherit; cursor: pointer; background: none; border: none; padding: 0; color: inherit; }
+  input, textarea { font: inherit; color: inherit; }
 }
 
-body {
-  font-family:             var(--font-sans);
-  font-weight:             400;
-  -webkit-font-smoothing:  antialiased;
-  overflow-x:              hidden;
+/* ── Componentes reusables ──────────────────────────────────── */
+@layer components {
+
+  .label-mono {
+    @apply font-mono text-[10px] uppercase tracking-[1.4px] text-muted;
+  }
+
+  .card {
+    @apply border border-line rounded-2xl bg-bg-elev;
+  }
+
+  .card-padded {
+    @apply card p-6;
+  }
+
+  .input-base {
+    @apply w-full bg-bg border border-line-2 rounded-[10px] px-[14px] py-3
+           text-sm text-ivory outline-none;
+  }
+
+  .input-base:focus {
+    border-color: var(--rust);
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-[10px]
+           bg-rust text-white border-none rounded-[10px] px-[18px] py-[13px]
+           text-sm font-medium cursor-pointer
+           transition-[background] duration-150 ease-out;
+  }
+  .btn-primary:hover  { background: var(--rust-bright); }
+  .btn-primary:disabled { background: var(--rust-deep); cursor: not-allowed; }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2
+           border border-line-2 rounded-[10px] px-4 py-[10px]
+           text-sm text-ivory bg-transparent cursor-pointer
+           transition-[background,border-color,color] duration-150 ease-out;
+  }
+  .btn-ghost:hover {
+    background: rgba(255,255,255,0.03);
+    border-color: #4d4136;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-2
+           border border-[rgba(220,38,38,0.25)] rounded-lg px-3 py-[7px]
+           text-xs font-mono text-[#f87171] bg-transparent cursor-pointer
+           transition-[background] duration-150 ease-out;
+  }
+  .btn-danger:hover    { background: rgba(220,38,38,0.08); }
+  .btn-danger:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  .chip-rust {
+    @apply inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[1.2px]
+           text-rust-bright border border-[color-mix(in_oklab,var(--rust)_40%,transparent)]
+           rounded-md px-2 py-[3px];
+  }
 }
 
-a  { color: inherit; text-decoration: none; }
-button { font: inherit; cursor: pointer; }
+/* ── Animaciones ─────────────────────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+.animate-pulse-slow {
+  animation: pulse 2.4s ease-in-out infinite;
+}
 
-/* ── Vault animation ─────────────────────────────────────────── */
-.vault-spokes {
-  transition: transform 600ms cubic-bezier(.2, .7, .2, 1);
-}
-.vault-unlocked .vault-spokes {
-  transform: rotate(45deg);
-}
+.vault-spokes      { transition: transform 600ms cubic-bezier(.2, .7, .2, 1); }
+.vault-unlocked .vault-spokes { transform: rotate(45deg); }
 .vault-unlocked .vault-door {
   box-shadow:
     inset 0 0 0 1px rgba(255, 220, 180, 0.15),
@@ -54,16 +121,23 @@ button { font: inherit; cursor: pointer; }
     0 0 60px color-mix(in oklab, var(--rust) 40%, transparent);
 }
 
-/* ── Pulse animation ─────────────────────────────────────────── */
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.45; }
-}
-.animate-pulse-slow {
-  animation: pulse 2.4s ease-in-out infinite;
-}
-
 /* ── Scrollbar ───────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+
+/* ── Mobile fixes para componentes con estilos inline ─────────── */
+/* Compartidos.tsx y Ajustes.tsx mantienen mucho inline. Estas reglas
+   atacan los anchos fijos para que no rompan el layout en móvil. */
+@media (max-width: 640px) {
+  /* Inputs y textareas no deben tener width fijo en móvil */
+  input[type="text"], input[type="email"], input[type="password"],
+  input[type="number"], textarea, select {
+    max-width: 100%;
+  }
+
+  /* Buttons con padding muy grande se aplastan */
+  button {
+    word-break: keep-all;
+  }
+}

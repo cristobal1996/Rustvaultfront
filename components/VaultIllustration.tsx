@@ -1,8 +1,8 @@
-// components/Vault.tsx
+// components/VaultIllustration.tsx
 "use client"
-import { useState, useEffect, useRef } from "react"
+import { useState, useRef } from "react"
 
-export function Vault() {
+export function VaultIllustration() {
   const [unlocked, setUnlocked] = useState(false)
   const vaultRef = useRef<HTMLDivElement>(null)
 
@@ -48,81 +48,6 @@ export function Vault() {
           pointerEvents: "none",
         }}
       />
-
-      {/* Telemetría 1 */}
-      <div
-        style={{
-          position:       "absolute",
-          top:            "8%",
-          left:           "-8%",
-          background:     "color-mix(in oklab, var(--bg-elev) 90%, transparent)",
-          border:         "1px solid var(--line-2)",
-          borderRadius:   "10px",
-          padding:        "10px 12px",
-          fontFamily:     "var(--font-mono)",
-          fontSize:       "11px",
-          color:          "var(--ivory-dim)",
-          display:        "flex",
-          alignItems:     "center",
-          gap:            "10px",
-          backdropFilter: "blur(6px)",
-          boxShadow:      "0 10px 30px -10px rgba(0,0,0,0.6)",
-          zIndex:         2,
-        }}
-      >
-        <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "var(--patina)", boxShadow: "0 0 0 3px color-mix(in oklab, var(--patina) 22%, transparent)", flexShrink: 0 }} />
-        AES-256-GCM activo
-      </div>
-
-      {/* Telemetría 2 */}
-      <div
-        style={{
-          position:       "absolute",
-          bottom:         "12%",
-          right:          "-10%",
-          background:     "color-mix(in oklab, var(--bg-elev) 90%, transparent)",
-          border:         "1px solid var(--line-2)",
-          borderRadius:   "10px",
-          padding:        "10px 12px",
-          fontFamily:     "var(--font-mono)",
-          fontSize:       "11px",
-          color:          "var(--ivory-dim)",
-          display:        "flex",
-          alignItems:     "center",
-          gap:            "10px",
-          backdropFilter: "blur(6px)",
-          boxShadow:      "0 10px 30px -10px rgba(0,0,0,0.6)",
-          zIndex:         2,
-        }}
-      >
-        <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "var(--rust)", flexShrink: 0 }} />
-        Zero-knowledge
-      </div>
-
-      {/* Telemetría 3 */}
-      <div
-        style={{
-          position:       "absolute",
-          bottom:         "-4%",
-          left:           "8%",
-          background:     "color-mix(in oklab, var(--bg-elev) 90%, transparent)",
-          border:         "1px solid var(--line-2)",
-          borderRadius:   "10px",
-          padding:        "10px 12px",
-          fontFamily:     "var(--font-mono)",
-          fontSize:       "11px",
-          color:          "var(--ivory-dim)",
-          display:        "flex",
-          alignItems:     "center",
-          gap:            "10px",
-          backdropFilter: "blur(6px)",
-          boxShadow:      "0 10px 30px -10px rgba(0,0,0,0.6)",
-          zIndex:         2,
-        }}
-      >
-        <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "var(--patina)", boxShadow: "0 0 0 3px color-mix(in oklab, var(--patina) 22%, transparent)", flexShrink: 0 }} className="animate-pulse-slow" />
-        Rust · Axum · PostgreSQL
-      </div>
 
       {/* La caja fuerte */}
       <div

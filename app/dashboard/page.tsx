@@ -1,113 +1,170 @@
 // app/dashboard/page.tsx
 "use client"
 import { useState, useEffect } from "react"
-import { clearMUK } from "@/lib/muk"
-import { useRouter }           from "next/navigation"
-import Link                    from "next/link"
-import { Sidebar }             from "@/components/dashboard/Sidebar"
-import { Resumen }             from "@/components/dashboard/sections/Resumen"
-import { Entradas }            from "@/components/dashboard/sections/Entradas"
-import { Generador }           from "@/components/dashboard/sections/Generador"
-import { TOTP }                from "@/components/dashboard/sections/TOTP"
-import { Compartidos }         from "@/components/dashboard/sections/Compartidos"
-import { Dispositivos }        from "@/components/dashboard/sections/Dispositivos"
-import { Ajustes }             from "@/components/dashboard/sections/Ajustes"
+import { useRouter } from "next/navigation"
+import { Bars3Icon } from "@heroicons/react/24/outline"
+
+import { Header }       from "@/components/Header"
+import { Sidebar }      from "@/components/dashboard/Sidebar"
+import { Resumen }      from "@/components/dashboard/sections/Resumen"
+import { Entradas }     from "@/components/dashboard/sections/Entradas"
+import { Generador }    from "@/components/dashboard/sections/Generador"
+import { TOTP }         from "@/components/dashboard/sections/TOTP"
+import { Compartidos }  from "@/components/dashboard/sections/Compartidos"
+import { Dispositivos } from "@/components/dashboard/sections/Dispositivos"
+import { Ajustes }      from "@/components/dashboard/sections/Ajustes"
+
+import { apiGet, apiPost, clearSession, getToken } from "@/lib/api"
+import { log } from "@/lib/log"
+import { clearKeyPairCache } from "@/lib/sharing"
+
+type Section = "resumen" | "entradas" | "generador" | "totp" | "compartidos" | "dispositivos" | "ajustes"
+type Counts  = Record<string, number>
 
 interface User { name: string; email: string }
 
+const SECTION_LABELS: Record<Section, string> = {
+  resumen:      "Resumen",
+  entradas:     "Contraseñas",
+  generador:    "Generador",
+  totp:         "Códigos 2FA",
+  compartidos:  "Compartidos",
+  dispositivos: "Dispositivos",
+  ajustes:      "Ajustes",
+}
+
 export default function Dashboard() {
-  const router  = useRouter()
-  const [section, setSection] = useState("resumen")
-  const [token,   setToken]   = useState("")
-  const [user,    setUser]    = useState<User>({ name: "Usuario", email: "" })
-  const [ready,   setReady]   = useState(false)
-  const [counts,  setCounts]  = useState<Record<string, number>>({
-    entradas: 0, totp: 0, dispositivos: 0,
-  })
+  const router = useRouter()
+  const [section,     setSection]     = useState<Section>("resumen")
+  const [user,        setUser]        = useState<User>({ name: "Usuario", email: "" })
+  const [ready,       setReady]       = useState(false)
+  const [drawerOpen,  setDrawerOpen]  = useState(false)
+  const [counts,      setCounts]      = useState<Counts>({ entradas: 0, totp: 0, dispositivos: 0 })
 
   useEffect(() => {
-    const t = localStorage.getItem("rv_token")
-    if (!t) { router.replace("/login"); return }
-    setToken(t)
+    if (!getToken()) { router.replace("/login"); return }
+    bootstrapUserData().then(() => setReady(true))
 
-    fetch("/api/account/me", { headers: { Authorization: `Bearer ${t}` } })
-      .then(r => r.ok ? r.text() : Promise.resolve(""))
-      .then(text => {
-        if (!text) return
-        const data = JSON.parse(text)
-        if (data.email) {
-          const emailName = data.email.split("@")[0]
-          setUser({ name: emailName.charAt(0).toUpperCase() + emailName.slice(1), email: data.email })
+    async function bootstrapUserData() {
+      try {
+        const [me, passwords, devices] = await Promise.allSettled([
+          apiGet<{ email: string }>("/api/account/me"),
+          apiGet<{ total?: number }>("/api/passwords"),
+          apiGet<unknown[]>("/api/devices"),
+        ])
+
+        if (me.status === "fulfilled" && me.value.email) {
+          const name = me.value.email.split("@")[0]
+          setUser({
+            name:  name.charAt(0).toUpperCase() + name.slice(1),
+            email: me.value.email,
+          })
+        } else {
+          const email = localStorage.getItem("rv_email") ?? ""
+          if (!email) { router.replace("/login"); return }
+          const name = email.split("@")[0]
+          setUser({ name: name.charAt(0).toUpperCase() + name.slice(1), email })
         }
-      }).catch(() => {
-        // Fallback: usar el email guardado en localStorage
-        const email = localStorage.getItem("rv_email") ?? ""
-        if (email) {
-          const emailName = email.split("@")[0]
-          setUser({ name: emailName.charAt(0).toUpperCase() + emailName.slice(1), email })
+
+        if (passwords.status === "fulfilled") {
+          setCounts(c => ({ ...c, entradas: passwords.value.total ?? 0 }))
         }
-      })
-
-
-      .catch(() => {})
-
-    fetch("/api/passwords", { headers: { Authorization: `Bearer ${t}` } })
-      .then(r => r.ok ? r.json() : { total: 0 })
-      .then(data => setCounts(c => ({ ...c, entradas: data.total ?? 0 })))
-      .catch(() => {})
-
-    fetch("/api/devices", { headers: { Authorization: `Bearer ${t}` } })
-      .then(r => r.json())
-      .then(data => setCounts(c => ({ ...c, dispositivos: (Array.isArray(data) ? data : []).length })))
-      .catch(() => {})
-
-    setReady(true)
+        if (devices.status === "fulfilled") {
+          setCounts(c => ({ ...c, dispositivos: (devices.value ?? []).length }))
+        }
+      } catch (e) {
+        log.error("bootstrap failed", e)
+      }
+    }
   }, [router])
 
+  // Bloquear scroll del body cuando el drawer está abierto
+  useEffect(() => {
+    if (drawerOpen) document.body.style.overflow = "hidden"
+    else            document.body.style.overflow = ""
+    return () => { document.body.style.overflow = "" }
+  }, [drawerOpen])
+
+  // Cerrar drawer al cambiar de sección
+  const handleSectionChange = (s: string) => {
+    setSection(s as Section)
+    setDrawerOpen(false)
+  }
+
   async function handleLogout() {
-    if (token) await fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
-    localStorage.clear()
-    clearMUK()
-    localStorage.removeItem('rv_muk')
+    try { await apiPost("/api/auth/logout") } catch { /* ignorar */ }
+    clearSession()
+    clearKeyPairCache()
     router.replace("/login")
   }
 
-  const initials = user.name.split(" ").map((w: string) => w[0]).join("").slice(0, 2).toUpperCase()
   if (!ready) return null
 
   return (
     <>
-      <header style={{ position: "sticky", top: 0, zIndex: 50, background: "color-mix(in oklab, #ffffff 92%, transparent)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderBottom: "1px solid #e6e0d6", color: "#0d0a08" }}>
-        <div style={{ maxWidth: "1320px", margin: "0 auto", padding: "18px 40px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "32px" }}>
-          <Link href="/" style={{ display: "flex", alignItems: "center", gap: "12px", color: "#0d0a08", textDecoration: "none" }}>
-            <div style={{ width: "34px", height: "34px", borderRadius: "9px", background: "radial-gradient(120% 120% at 30% 25%, oklch(0.74 0.14 55), oklch(0.62 0.13 45) 45%, oklch(0.48 0.13 40) 90%)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 -8px 14px rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <span style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "16px", color: "rgba(20,15,10,0.7)" }}>R</span>
-            </div>
-            <span style={{ fontFamily: "var(--font-serif)", fontSize: "24px", letterSpacing: "0.5px" }}>
-              Rust<em style={{ fontStyle: "italic", color: "oklch(0.62 0.13 45)" }}>vault</em>
-            </span>
-          </Link>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: "12px", padding: "6px 8px 6px 14px", border: "1px solid #e6e0d6", borderRadius: "999px", color: "#0d0a08", fontSize: "13.5px" }}>
-            <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "oklch(0.58 0.06 170)", boxShadow: "0 0 0 3px color-mix(in oklab, oklch(0.58 0.06 170) 25%, transparent)", flexShrink: 0 }} />
-            <span>Sesión activa</span>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "grid", placeItems: "center", fontFamily: "var(--font-serif)", fontSize: "14px", color: "#f8f0e4", background: "linear-gradient(135deg, oklch(0.55 0.13 45), oklch(0.4 0.11 35))", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.15)", flexShrink: 0 }}>
-              {initials}
-            </div>
-          </div>
+      <Header />
+
+      {/* Topbar móvil con hamburguesa */}
+      <div className="lg:hidden sticky top-[57px] z-40 bg-bg border-b border-line">
+        <div className="px-5 py-3 flex items-center justify-between gap-4">
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="inline-flex items-center justify-center w-10 h-10 rounded-full hover:bg-line transition-colors text-ivory"
+            aria-label="Abrir menú"
+          >
+            <Bars3Icon className="w-6 h-6" strokeWidth={1.8} />
+          </button>
+          <span className="font-serif text-lg text-ivory">{SECTION_LABELS[section]}</span>
+          <div className="w-10" />  {/* spacer para centrar */}
         </div>
-      </header>
+      </div>
 
-      <div style={{ maxWidth: "1320px", margin: "0 auto", padding: "32px 40px 80px", display: "grid", gridTemplateColumns: "280px 1fr", gap: "32px", alignItems: "start" }}>
-        <Sidebar active={section} onChange={setSection} user={user} onLogout={handleLogout} counts={counts} />
+      <div className="max-w-container mx-auto px-5 sm:px-8 lg:px-10
+                      pt-5 sm:pt-8 pb-12 sm:pb-20
+                      lg:grid lg:gap-8 lg:items-start"
+           style={{ gridTemplateColumns: "280px 1fr" }}>
 
-        <main style={{ minHeight: "70vh", border: "1px solid var(--line)", borderRadius: "18px", background: "radial-gradient(80% 60% at 50% 0%, rgba(255,255,255,0.015), transparent 60%), var(--bg-elev)", padding: "40px" }}>
-          {section === "resumen"       && <Resumen user={user} counts={counts} onNav={setSection} />}
-          {section === "entradas"      && <Entradas     token={token} />}
-          {section === "generador"     && <Generador    token={token} />}
-          {section === "totp"          && <TOTP         token={token} />}
-          {section === "compartidos"   && <Compartidos  token={token} />}
-          {section === "dispositivos"  && <Dispositivos token={token} />}
-          {section === "ajustes"       && <Ajustes      token={token} onLogout={handleLogout} />}
+        {/* Sidebar desktop (siempre visible en lg+) */}
+        <div className="hidden lg:block">
+          <Sidebar
+            active={section}
+            onChange={handleSectionChange}
+            user={user}
+            onLogout={handleLogout}
+            counts={counts}
+          />
+        </div>
+
+        {/* Drawer móvil */}
+        {drawerOpen && (
+          <>
+            <div
+              className="lg:hidden fixed inset-0 bg-black/50 z-40"
+              onClick={() => setDrawerOpen(false)}
+              aria-hidden
+            />
+            <div className="lg:hidden fixed inset-y-0 left-0 z-50 w-[280px] max-w-[85vw] overflow-y-auto bg-bg p-4"
+                 style={{ boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}>
+              <Sidebar
+                active={section}
+                onChange={handleSectionChange}
+                user={user}
+                onLogout={handleLogout}
+                counts={counts}
+              />
+            </div>
+          </>
+        )}
+
+        <main className="min-h-[70vh] border border-line rounded-2xl p-5 sm:p-8 lg:p-10"
+              style={{ background: "radial-gradient(80% 60% at 50% 0%, rgba(255,255,255,0.015), transparent 60%), var(--bg-elev)" }}>
+          {section === "resumen"      && <Resumen      user={user} counts={counts} onNav={handleSectionChange} />}
+          {section === "entradas"     && <Entradas />}
+          {section === "generador"    && <Generador />}
+          {section === "totp"         && <TOTP />}
+          {section === "compartidos"  && <Compartidos />}
+          {section === "dispositivos" && <Dispositivos />}
+          {section === "ajustes"      && <Ajustes onLogout={handleLogout} />}
         </main>
       </div>
     </>

@@ -1,11 +1,12 @@
 // components/dashboard/sections/TOTP.tsx
 "use client"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { getMUK } from "@/lib/muk"
-import { useState, useEffect, useRef } from "react"
+import { aesDecrypt, aesEncryptText, type EncryptedBlob } from "@/lib/crypto"
+import { hexToBytes, bytesToHex } from "@/lib/hex"
+import { apiGet, apiPost, apiDelete } from "@/lib/api"
+import { log } from "@/lib/log"
 
-interface Props { token: string }
-
-interface EncryptedBlob { nonce: string; ciphertext: string }
 interface TOTPCredential {
   id:               string
   issuer:           string | null
@@ -16,21 +17,7 @@ interface TOTPCredential {
   encrypted_secret: EncryptedBlob
 }
 
-// ── Crypto helpers ────────────────────────────────────────────────
-
-function hexToBytes(hex: string): Uint8Array {
-  const b = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < hex.length; i += 2) b[i / 2] = parseInt(hex.slice(i, i + 2), 16)
-  return b
-}
-
-async function decryptBlob(blob: EncryptedBlob, keyHex: string): Promise<Uint8Array | null> {
-  try {
-    const key   = await crypto.subtle.importKey("raw", hexToBytes(keyHex), { name: "AES-GCM" }, false, ["decrypt"])
-    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: hexToBytes(blob.nonce) }, key, hexToBytes(blob.ciphertext))
-    return new Uint8Array(plain)
-  } catch { return null }
-}
+const decryptBlob = aesDecrypt
 
 // ── TOTP RFC 6238 ─────────────────────────────────────────────────
 
@@ -149,7 +136,7 @@ function TOTPCard({ cred, vaultKeyHex, onDelete }: { cred: TOTPCredential; vault
 
 // ── Componente principal ───────────────────────────────────────────
 
-export function TOTP({ token }: Props) {
+export function TOTP() {
   const [creds,        setCreds]        = useState<TOTPCredential[]>([])
   const [loading,      setLoading]      = useState(false)
   const [vaultKeyHex,  setVaultKeyHex]  = useState<string | null>(() => getMUK())
@@ -158,24 +145,21 @@ export function TOTP({ token }: Props) {
   const [showAdd,      setShowAdd]      = useState(false)
   const [parsed,       setParsed]       = useState<Record<string, string> | null>(null)
 
-  useEffect(() => {
-
-  }, [token])
-
-  useEffect(() => {
+  const loadCreds = useCallback(async () => {
     setLoading(true)
-    fetch("/api/totp", { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(data => setCreds(Array.isArray(data) ? data : []))
-      .catch(() => {}).finally(() => setLoading(false))
-  }, [token])
+    try {
+      const data = await apiGet<TOTPCredential[]>("/api/totp")
+      setCreds(Array.isArray(data) ? data : [])
+    } catch (e) { log.error("load totp", e) } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { loadCreds() }, [loadCreds])
 
   async function parseOTPUrl() {
-    const res  = await fetch("/api/totp/parse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:   JSON.stringify({ otpauth_url: parseUrl }),
-    })
-    if (res.ok) setParsed(await res.json())
+    try {
+      const data = await apiPost<Record<string, string>>("/api/totp/parse", { otpauth_url: parseUrl })
+      setParsed(data)
+    } catch (e) { log.error("parse otp url", e) }
   }
 
   async function saveTOTP() {
@@ -184,45 +168,22 @@ export function TOTP({ token }: Props) {
     if (!muk) { alert("Sesión expirada, vuelve a iniciar sesión"); return }
 
     try {
-      // Cifrar el secreto base32 con la Vault Key
-      // Por simplicidad ciframos con la MUK directamente
-      const secretBytes = new TextEncoder().encode(parsed.secret_b32)
-      const key   = await crypto.subtle.importKey("raw",
-        new Uint8Array(muk.match(/.{2}/g)!.map(b => parseInt(b, 16))),
-        { name: "AES-GCM" }, false, ["encrypt"])
-      const nonce = crypto.getRandomValues(new Uint8Array(12))
-      const ct    = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, secretBytes)
-      const toHex = (b: Uint8Array) => Array.from(b).map(x => x.toString(16).padStart(2,"0")).join("")
-      const encryptedSecret = { nonce: toHex(nonce), ciphertext: toHex(new Uint8Array(ct)) }
-
-      const res = await fetch("/api/totp", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({
-          issuer:           parsed.issuer   ?? "Desconocido",
-          account:          parsed.account  ?? "",
-          algorithm:        parsed.algorithm ?? "SHA1",
-          digits:           parsed.digits   ?? 6,
-          period:           parsed.period   ?? 30,
-          encrypted_secret: encryptedSecret,
-        }),
+      const encryptedSecret = await aesEncryptText(parsed.secret_b32, muk)
+      await apiPost("/api/totp", {
+        issuer:           parsed.issuer    ?? "Desconocido",
+        account:          parsed.account   ?? "",
+        algorithm:        parsed.algorithm ?? "SHA1",
+        digits:           parseInt(parsed.digits as unknown as string) || 6,
+        period:           parseInt(parsed.period as unknown as string) || 30,
+        encrypted_secret: encryptedSecret,
       })
-
-      if (res.ok) {
-        setParsed(null)
-        setParseUrl("")
-        setShowAdd(false)
-        // Recargar la lista
-        const listRes = await fetch("/api/totp", { headers: { Authorization: `Bearer ${token}` } })
-        const data    = await listRes.json()
-        setCreds(Array.isArray(data) ? data : [])
-      } else {
-        const err = await res.json()
-        alert(err.error ?? "Error al guardar el código 2FA")
-      }
+      setParsed(null)
+      setParseUrl("")
+      setShowAdd(false)
+      loadCreds()
     } catch (e) {
-      alert("Error cifrando el secreto")
-      console.error(e)
+      alert("Error cifrando o guardando el secreto")
+      log.error("save totp", e)
     }
   }
 
@@ -302,11 +263,13 @@ export function TOTP({ token }: Props) {
           <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "11px", margin: 0 }}>Añade el QR de GitHub, Google, AWS… escaneando la URL otpauth://</p>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "14px" }}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-[14px]">
           {creds.map(cred => (
             <TOTPCard key={cred.id} cred={cred} vaultKeyHex={vaultKeyHex} onDelete={async () => {
-              await fetch(`/api/totp/${cred.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } })
-              setCreds(prev => prev.filter(c => c.id !== cred.id))
+              try {
+                await apiDelete(`/api/totp/${cred.id}`)
+                setCreds(prev => prev.filter(c => c.id !== cred.id))
+              } catch (e) { log.error("delete totp", e) }
             }} />
           ))}
         </div>

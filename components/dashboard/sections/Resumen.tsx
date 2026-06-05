@@ -1,178 +1,76 @@
 // components/dashboard/sections/Resumen.tsx
+import {
+  FolderIcon, LockClosedIcon, DevicePhoneMobileIcon, ComputerDesktopIcon,
+  PlusIcon, BoltIcon, QrCodeIcon, UsersIcon,
+} from "@heroicons/react/24/outline"
+
 interface Props {
   user:   { name: string; email: string }
   counts: Record<string, number>
   onNav:  (s: string) => void
 }
 
+const CARDS = [
+  { id: "vaults",       label: "Bóvedas",      key: "vaults",       color: "var(--rust-bright)",   Icon: FolderIcon },
+  { id: "entradas",     label: "Contraseñas",  key: "entradas",     color: "oklch(0.78 0.08 170)", Icon: LockClosedIcon },
+  { id: "totp",         label: "Códigos 2FA",  key: "totp",         color: "oklch(0.8 0.08 250)",  Icon: DevicePhoneMobileIcon },
+  { id: "dispositivos", label: "Dispositivos", key: "dispositivos", color: "oklch(0.8 0.08 85)",   Icon: ComputerDesktopIcon },
+] as const
+
+const ACTIONS = [
+  { id: "entradas",    label: "Nueva contraseña",   Icon: PlusIcon },
+  { id: "generador",   label: "Generar contraseña", Icon: BoltIcon },
+  { id: "totp",        label: "Añadir código 2FA",  Icon: QrCodeIcon },
+  { id: "compartidos", label: "Ver compartidos",    Icon: UsersIcon },
+] as const
+
+// Extrae el primer nombre, separando por espacio O por puntos
+// (los emails con puntos como "cristobal.perez.1996" no caben en un H1)
+function firstName(fullName: string): string {
+  const noSpaces = fullName.split(" ")[0] ?? ""
+  const firstPart = noSpaces.split(".")[0] ?? noSpaces
+  return firstPart.charAt(0).toUpperCase() + firstPart.slice(1).toLowerCase()
+}
+
 export function Resumen({ user, counts, onNav }: Props) {
-  const cards = [
-    { id: "vaults",      label: "Vaults",            value: counts.vaults   ?? 0, color: "var(--rust-bright)" },
-    { id: "entradas",    label: "Contraseñas",        value: counts.entradas ?? 0, color: "oklch(0.78 0.08 170)" },
-    { id: "totp",        label: "Códigos 2FA",        value: counts.totp     ?? 0, color: "oklch(0.8 0.08 250)" },
-    { id: "dispositivos",label: "Dispositivos",       value: counts.dispositivos ?? 0, color: "oklch(0.8 0.08 85)" },
-  ]
-
-  const quickActions = [
-    { id: "entradas",    label: "Nueva contraseña",   icon: "+" },
-    { id: "generador",   label: "Generar contraseña", icon: "⚡" },
-    { id: "totp",        label: "Añadir código 2FA",  icon: "📱" },
-    { id: "compartidos", label: "Ver compartidos",    icon: "👥" },
-  ]
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
-      {/* Saludo */}
+    <div className="flex flex-col gap-6 sm:gap-7">
       <div>
-        <p style={{ fontFamily: "var(--font-mono)", fontSize: "11px", letterSpacing: "1.4px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 8px" }}>
-          Bienvenido de nuevo
-        </p>
-        <h1
-          style={{
-            fontFamily:    "var(--font-serif)",
-            fontWeight:    400,
-            fontSize:      "clamp(32px, 3.5vw, 48px)",
-            lineHeight:    1,
-            letterSpacing: "-0.6px",
-            margin:        0,
-            color:         "var(--ivory)",
-          }}
-        >
-          {user.name.split(" ")[0]}{" "}
-          <em style={{ fontStyle: "italic", color: "var(--rust-bright)" }}>
-            — tu bóveda está segura
-          </em>
+        <p className="font-mono text-[11px] uppercase tracking-[1.4px] text-muted m-0 mb-2">Bienvenido de nuevo</p>
+        <h1 className="font-serif font-normal
+                       text-[clamp(22px,5.5vw,48px)] sm:text-[clamp(32px,3.5vw,48px)]
+                       leading-tight tracking-[-0.6px] m-0 text-ivory break-words">
+          {firstName(user.name)}{" "}
+          <em className="italic text-rust-bright">— tu bóveda está segura</em>
         </h1>
       </div>
 
-      {/* Estadísticas */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
-        {cards.map(card => (
-          <button
-            key={card.id}
-            onClick={() => onNav(card.id)}
-            style={{
-              border:        "1px solid var(--line)",
-              borderRadius:  "14px",
-              padding:       "22px 20px",
-              background:    "var(--bg-elev)",
-              textAlign:     "left",
-              cursor:        "pointer",
-              transition:    "transform 140ms ease, border-color 140ms ease",
-              display:       "flex",
-              flexDirection: "column",
-              gap:           "6px",
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.transform   = "translateY(-2px)"
-              e.currentTarget.style.borderColor = "var(--line-2)"
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.transform   = "translateY(0)"
-              e.currentTarget.style.borderColor = "var(--line)"
-            }}
-          >
-            <span
-              style={{
-                fontFamily:    "var(--font-serif)",
-                fontSize:      "40px",
-                lineHeight:    1,
-                letterSpacing: "-0.6px",
-                color:         card.color,
-              }}
-            >
-              {card.value}
+      {/* Stat cards: 2 col en móvil, 4 en desktop */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        {CARDS.map(({ id, label, key, color, Icon }) => (
+          <button key={id} onClick={() => onNav(id)}
+            className="card text-left p-4 sm:p-[22px] flex flex-col gap-2 sm:gap-[10px] cursor-pointer
+                       hover:-translate-y-[2px] hover:border-line-2 transition-[transform,border-color] duration-150">
+            <Icon className="w-5 h-5" style={{ color }} />
+            <span className="font-serif text-[32px] sm:text-[40px] leading-none tracking-[-0.6px]" style={{ color }}>
+              {counts[key] ?? 0}
             </span>
-            <span
-              style={{
-                fontFamily:    "var(--font-mono)",
-                fontSize:      "10px",
-                letterSpacing: "1.2px",
-                textTransform: "uppercase",
-                color:         "var(--muted)",
-              }}
-            >
-              {card.label}
-            </span>
+            <span className="label-mono">{label}</span>
           </button>
         ))}
       </div>
 
-      {/* Acciones rápidas */}
+      {/* Quick actions: 1 col móvil, 2 col desde sm */}
       <div>
-        <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.4px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 12px" }}>
-          Acciones rápidas
-        </p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px" }}>
-          {quickActions.map(action => (
-            <button
-              key={action.id}
-              onClick={() => onNav(action.id)}
-              style={{
-                border:         "1px solid var(--line-2)",
-                borderRadius:   "12px",
-                padding:        "16px 18px",
-                background:     "transparent",
-                textAlign:      "left",
-                cursor:         "pointer",
-                display:        "flex",
-                alignItems:     "center",
-                gap:            "12px",
-                color:          "var(--ivory-dim)",
-                fontSize:       "14px",
-                transition:     "background 140ms ease, border-color 140ms ease, color 140ms ease",
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background    = "rgba(255,255,255,0.03)"
-                e.currentTarget.style.borderColor   = "#4d4136"
-                e.currentTarget.style.color         = "var(--ivory)"
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background    = "transparent"
-                e.currentTarget.style.borderColor   = "var(--line-2)"
-                e.currentTarget.style.color         = "var(--ivory-dim)"
-              }}
-            >
-              <span style={{ fontSize: "18px" }}>{action.icon}</span>
-              {action.label}
+        <p className="label-mono m-0 mb-3">Acciones rápidas</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {ACTIONS.map(({ id, label, Icon }) => (
+            <button key={id} onClick={() => onNav(id)} className="btn-ghost justify-start">
+              <Icon className="w-[18px] h-[18px] text-rust-bright flex-shrink-0" />
+              {label}
             </button>
           ))}
         </div>
-      </div>
-
-      {/* Nota de seguridad */}
-      <div
-        style={{
-          border:       "1px solid var(--line)",
-          borderRadius: "12px",
-          padding:      "16px 18px",
-          background:   "var(--bg-elev)",
-          display:      "flex",
-          alignItems:   "center",
-          gap:          "12px",
-        }}
-      >
-        <span
-          style={{
-            width:        "8px",
-            height:       "8px",
-            borderRadius: "50%",
-            background:   "var(--patina)",
-            boxShadow:    "0 0 0 3px color-mix(in oklab, var(--patina) 22%, transparent)",
-            flexShrink:   0,
-          }}
-        />
-        <p
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize:   "11px",
-            color:      "var(--muted)",
-            margin:     0,
-            letterSpacing: "0.2px",
-          }}
-        >
-          Tus contraseñas están cifradas con AES-256-GCM. El servidor nunca puede leerlas.
-        </p>
       </div>
     </div>
   )

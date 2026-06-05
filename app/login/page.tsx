@@ -1,371 +1,179 @@
 // app/login/page.tsx
 "use client"
-import { useState, Suspense } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useSearchParams } from "next/navigation"
+import { LockClosedIcon, KeyIcon } from "@heroicons/react/24/outline"
+
+import { saveMUK } from "@/lib/muk"
+import { deriveMUK } from "@/lib/crypto"
+import { apiPost, saveSession } from "@/lib/api"
+import { log } from "@/lib/log"
+
 import { Header } from "@/components/Header"
 import { Footer } from "@/components/Footer"
-import { deriveMUK, saveMUK } from "@/lib/muk"
+import { Button } from "@/components/ui/Button"
+import { Input }  from "@/components/ui/Input"
+import { ErrorMessage } from "@/components/ui/ErrorMessage"
 
-function hexToBytes(hex: string): Uint8Array {
-  const b = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < hex.length; i += 2) b[i / 2] = parseInt(hex.slice(i, i + 2), 16)
-  return b
+interface LoginResponse {
+  token?:        string
+  user?:         { id: string; email: string }
+  srp_salt?:     string
+  requires_2fa?: boolean
+  temp_token?:   string
 }
 
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("")
+type Step = "credentials" | "totp"
+
+// Detecta el nombre del navegador para mostrarlo en "Dispositivos"
+function detectDeviceName(): string {
+  if (typeof navigator === "undefined") return "Navegador"
+  const ua = navigator.userAgent
+  if (/Edg\//.test(ua))   return "Microsoft Edge"
+  if (/Chrome\//.test(ua) && !/Edg|OPR/.test(ua)) return "Google Chrome"
+  if (/Firefox\//.test(ua)) return "Mozilla Firefox"
+  if (/Safari\//.test(ua) && !/Chrome|Chromium/.test(ua)) return "Safari"
+  if (/Opera|OPR\//.test(ua)) return "Opera"
+  return "Navegador"
 }
 
-function LoginForm() {
-  const router        = useRouter()
-  const searchParams  = useSearchParams()
-  const justRegistered = searchParams.get("registered") === "1"
+export default function Login() {
+  const router = useRouter()
+  const [step,      setStep]      = useState<Step>("credentials")
+  const [email,     setEmail]     = useState("")
+  const [password,  setPassword]  = useState("")
+  const [totpCode,  setTotpCode]  = useState("")
+  const [tempToken, setTempToken] = useState("")
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState<string | null>(null)
 
-  const [email,    setEmail]    = useState("")
-  const [password, setPassword] = useState("")
-  const [showPass, setShowPass] = useState(false)
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState<string | null>(null)
-  const [step,     setStep]     = useState<"idle" | "auth" | "deriving">("idle")
-
-  // Estado 2FA
-  const [needs2FA,    setNeeds2FA]    = useState(false)
-  const [totpCode,    setTotpCode]    = useState("")
-  const [pendingData, setPendingData] = useState<{ token: string; srp_salt: string; user: { id: string; email: string } } | null>(null)
-
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
     setLoading(true)
-    setStep("auth")
-
     try {
-      // 1. Autenticar con el servidor
-      const res = await fetch("/api/auth/login", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          email,
-          password,
-          device_name: "Navegador web",
-          platform:    "web",
-        }),
-      })
+      const data = await apiPost<LoginResponse>("/api/auth/login", {
+        email:              email.trim().toLowerCase(),
+        password,
+        device_name:        detectDeviceName(),
+        platform:           "web",
+        device_fingerprint: null,
+      }, { auth: false })
 
-      const data = await res.json()
-
-      if (!res.ok) {
-        setError(data.error ?? "Credenciales incorrectas")
+      if (data.requires_2fa && data.temp_token) {
+        setTempToken(data.temp_token)
+        setStep("totp")
         return
       }
 
-      // 2. Si requiere 2FA — guardar datos pendientes y mostrar el paso
-      if (data.requires_2fa) {
-        setPendingData({ token: data.token, srp_salt: data.srp_salt, user: data.user })
-        setNeeds2FA(true)
-        setLoading(false)
-        setStep("idle")
-        return
-      }
-
-      // 3. Sin 2FA — continuar con el flujo normal
-      await completarLogin(data)
-
-    } catch {
-      setError("Error de conexión con el servidor")
-    } finally {
-      setLoading(false)
-      setStep("idle")
-    }
-  }
-
-  async function handleVerify2FA(e: React.FormEvent) {
-    e.preventDefault()
-    if (!pendingData || totpCode.length !== 6) return
-    setLoading(true)
-    setError(null)
-
-    try {
-      // Verificar el código TOTP con el servidor
-      const res = await fetch("/api/auth/login", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          email,
-          password,
-          totp_code:   totpCode,
-          device_name: "Navegador web",
-          platform:    "web",
-        }),
-      })
-
-      const data = await res.json()
-      if (!res.ok) {
-        setError("Código incorrecto — inténtalo de nuevo")
-        return
-      }
-
-      await completarLogin(data)
-
-    } catch {
-      setError("Error de conexión")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function completarLogin(data: { token: string; srp_salt: string; user: { id: string; email: string; pub_key?: string } }) {
-    setStep("deriving")
-    const mukHex = await deriveMUK(password, data.srp_salt)
-    saveMUK(mukHex)
-    localStorage.setItem("rv_token",    data.token)
-    localStorage.setItem("rv_srp_salt", data.srp_salt)
-    localStorage.setItem("rv_user_id",  data.user.id)
-    localStorage.setItem("rv_email",    data.user.email)
-    localStorage.setItem("rv_muk",      mukHex)
-    window.postMessage({ type: "RUSTVAULT_MUK", mukHex }, "*")
-
-    // Generar recovery_blob si el usuario no lo tiene todavía
-    try {
-      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${data.token}` } }).then(r => r.json())
-      if (!profile.recovery_blob) {
-        const rkBytes  = crypto.getRandomValues(new Uint8Array(32))
-        const rkKey    = await crypto.subtle.importKey("raw", rkBytes, { name: "AES-GCM" }, false, ["encrypt"])
-        const nonce    = crypto.getRandomValues(new Uint8Array(12))
-        const mukBytes = new Uint8Array(mukHex.length / 2)
-        for (let i = 0; i < mukHex.length; i += 2) mukBytes[i/2] = parseInt(mukHex.slice(i, i+2), 16)
-        const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, rkKey, mukBytes)
-
-        const rkHex = Array.from(rkBytes).map(b => b.toString(16).padStart(2,"0")).join("")
-        const blob  = {
-          nonce:      Array.from(nonce).map(b => b.toString(16).padStart(2,"0")).join(""),
-          ciphertext: Array.from(new Uint8Array(ct)).map(b => b.toString(16).padStart(2,"0")).join(""),
-        }
-
-        await fetch("/api/auth/recover/save-blob", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
-          body:    JSON.stringify({ recovery_blob: blob }),
-        })
-
-        // Guardar la Recovery Key en localStorage para que el usuario pueda verla
-        localStorage.setItem("rv_recovery_key_new", rkHex)
-      }
+      await completeLogin(data)
     } catch (e) {
-      console.warn("No se pudo generar recovery blob:", e)
+      log.error("login failed", e)
+      setError(e instanceof Error ? e.message : "Credenciales incorrectas")
+    } finally {
+      setLoading(false)
     }
+  }
+
+  async function handle2FA(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+    try {
+      const data = await apiPost<LoginResponse>("/api/auth/login", {
+        email:              email.trim().toLowerCase(),
+        password,
+        totp_code:          totpCode.trim(),
+        device_name:        detectDeviceName(),
+        platform:           "web",
+        device_fingerprint: null,
+      }, { auth: false })
+
+      await completeLogin(data)
+    } catch (e) {
+      log.error("2fa failed", e)
+      setError(e instanceof Error ? e.message : "Código incorrecto")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function completeLogin(data: LoginResponse) {
+    if (!data.token || !data.user || !data.srp_salt) {
+      throw new Error("Respuesta de login incompleta")
+    }
+
+    const mukHex = await deriveMUK(password, data.srp_salt)
+
+    saveSession({
+      token:    data.token,
+      srp_salt: data.srp_salt,
+      user_id:  data.user.id,
+      email:    data.user.email,
+    })
+    saveMUK(mukHex)
 
     router.push("/dashboard")
   }
 
-  const stepLabel = step === "auth" ? "Verificando credenciales…" : step === "deriving" ? "Derivando clave maestra…" : "Entrar a la bóveda"
-
-  const inp: React.CSSProperties = {
-    width: "100%", background: "var(--bg)", border: "1px solid var(--line-2)",
-    borderRadius: "10px", padding: "12px 14px", fontSize: "14px",
-    color: "var(--ivory)", outline: "none", transition: "border-color 160ms ease",
-    boxSizing: "border-box",
-  }
-
-  // ── Pantalla de verificación 2FA ──────────────────────────────
-  if (needs2FA) return (
-    <div style={{ width: "100%", maxWidth: "380px" }}>
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "28px" }}>
-        <div style={{ width: "72px", height: "72px", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, oklch(0.74 0.14 55), oklch(0.62 0.13 45) 50%, oklch(0.48 0.13 40))", display: "grid", placeItems: "center" }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(20,15,10,0.7)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="5" y="11" width="14" height="10" rx="2"/>
-            <path d="M8 11V7a4 4 0 018 0v4"/>
-          </svg>
-        </div>
-      </div>
-
-      <h1 style={{ fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: "28px", textAlign: "center", margin: "0 0 6px", color: "var(--ivory)" }}>
-        Verificación 2FA
-      </h1>
-      <p style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--muted)", textAlign: "center", margin: "0 0 32px", lineHeight: "1.6" }}>
-        Abre tu app autenticadora e introduce<br/>el código de 6 dígitos
-      </p>
-
-      {error && (
-        <div style={{ background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.2)", borderRadius: "10px", padding: "12px 14px", fontSize: "13px", color: "#f87171", marginBottom: "16px", textAlign: "center" }}>
-          {error}
-        </div>
-      )}
-
-      <form onSubmit={handleVerify2FA} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-        <input
-          type="tel"
-          placeholder="000000"
-          value={totpCode}
-          onChange={e => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-          maxLength={6}
-          autoFocus
-          style={{ width: "100%", background: "var(--bg)", border: "1px solid var(--line-2)", borderRadius: "10px", padding: "16px", fontSize: "32px", fontFamily: "var(--font-mono)", letterSpacing: "0.4em", textAlign: "center", color: "var(--ivory)", outline: "none", boxSizing: "border-box" }}
-        />
-        <button type="submit" disabled={loading || totpCode.length !== 6}
-          style={{ width: "100%", background: totpCode.length === 6 ? "var(--rust)" : "var(--rust-deep)", color: "#fff", border: "none", borderRadius: "10px", padding: "14px", fontSize: "15px", fontWeight: 500, cursor: totpCode.length === 6 ? "pointer" : "not-allowed" }}>
-          {loading ? "Verificando…" : "Verificar código"}
-        </button>
-        <button type="button" onClick={() => { setNeeds2FA(false); setPendingData(null); setTotpCode(""); setError(null) }}
-          style={{ background: "transparent", border: "none", color: "var(--muted)", fontSize: "13px", cursor: "pointer", fontFamily: "var(--font-mono)" }}>
-          ← Volver al login
-        </button>
-      </form>
-    </div>
-  )
-
-  return (
-    <div style={{ width: "100%", maxWidth: "420px" }}>
-      {/* Icono */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "32px" }}>
-        <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, oklch(0.74 0.14 55), oklch(0.62 0.13 45) 50%, oklch(0.48 0.13 40))", boxShadow: "0 0 0 1px var(--line-2), 0 20px 60px -20px oklch(0.48 0.13 40), inset 0 0 0 1px rgba(255,255,255,0.12)", display: "grid", placeItems: "center" }}>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(20,15,10,0.6)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="8" r="4"/>
-            <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-          </svg>
-        </div>
-      </div>
-
-      {/* Título */}
-      <h1 style={{ fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: "32px", letterSpacing: "-0.4px", textAlign: "center", margin: "0 0 6px", color: "var(--ivory)" }}>
-        Bienvenido de nuevo
-      </h1>
-      <p style={{ fontFamily: "var(--font-sans)", fontSize: "14px", color: "var(--muted)", textAlign: "center", margin: "0 0 36px" }}>
-        Accede a tu bóveda segura
-      </p>
-
-      {/* Formulario */}
-      <div style={{ background: "var(--bg-elev)", border: "1px solid var(--line)", borderRadius: "20px", padding: "32px" }}>
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-
-          {/* Registro exitoso */}
-          {justRegistered && (
-            <div style={{ background: "rgba(22,163,74,0.08)", border: "1px solid rgba(22,163,74,0.25)", borderRadius: "10px", padding: "12px 14px", fontSize: "13px", color: "#4ade80", display: "flex", alignItems: "center", gap: "8px" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <polyline points="20 6 9 17 4 12"/>
-              </svg>
-              Cuenta creada correctamente — inicia sesión
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div style={{ background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.2)", borderRadius: "10px", padding: "12px 14px", fontSize: "13px", color: "#f87171", display: "flex", alignItems: "center", gap: "8px" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
-              </svg>
-              {error}
-            </div>
-          )}
-
-          {/* Email */}
-          <div>
-            <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10.5px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "8px" }}>
-              Correo electrónico
-            </label>
-            <input id="email" type="email" required autoComplete="email"
-              value={email} onChange={e => setEmail(e.target.value)}
-              placeholder="alice@example.com" style={inp}
-              onFocus={e => e.target.style.borderColor = "var(--rust)"}
-              onBlur={e  => e.target.style.borderColor = "var(--line-2)"}
-            />
-          </div>
-
-          {/* Contraseña */}
-          <div>
-            <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10.5px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "8px" }}>
-              Contraseña maestra
-            </label>
-            <div style={{ position: "relative" }}>
-              <input id="password" type={showPass ? "text" : "password"} required autoComplete="current-password"
-                value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••••••"
-                style={{ ...inp, paddingRight: "44px" }}
-                onFocus={e => e.target.style.borderColor = "var(--rust)"}
-                onBlur={e  => e.target.style.borderColor = "var(--line-2)"}
-              />
-              <button type="button" onClick={() => setShowPass(v => !v)}
-                style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--muted)", padding: "4px", cursor: "pointer", lineHeight: 0 }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  {showPass
-                    ? <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></>
-                    : <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>
-                  }
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* Botón */}
-          <button type="submit" disabled={loading}
-            style={{ background: loading ? "var(--rust-deep)" : "var(--rust)", color: "#fff", border: "none", borderRadius: "10px", padding: "13px", fontWeight: 500, fontSize: "14.5px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginTop: "4px", cursor: loading ? "not-allowed" : "pointer", boxShadow: "0 1px 0 rgba(255,255,255,0.1) inset", transition: "background 160ms" }}>
-            {loading ? (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                </svg>
-                {stepLabel}
-              </>
-            ) : (
-              <>
-                Entrar a la bóveda
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 12h14M12 5l7 7-7 7"/>
-                </svg>
-              </>
-            )}
-          </button>
-
-          {/* Separador */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", margin: "4px 0" }}>
-            <div style={{ flex: 1, height: "1px", background: "var(--line)" }} />
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--muted)", letterSpacing: "1px" }}>o</span>
-            <div style={{ flex: 1, height: "1px", background: "var(--line)" }} />
-          </div>
-
-          {/* Botones secundarios */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <Link href="/recuperar" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", background: "transparent", border: "1px solid var(--line-2)", borderRadius: "10px", padding: "11px", fontSize: "13.5px", color: "var(--ivory-dim)", textDecoration: "none", transition: "background 160ms ease" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-              </svg>
-              Recuperar contraseña
-            </Link>
-            <Link href="/register" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", background: "transparent", border: "1px solid var(--line-2)", borderRadius: "10px", padding: "11px", fontSize: "13.5px", color: "var(--ivory-dim)", textDecoration: "none", transition: "background 160ms ease" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-                <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-              Crear una cuenta nueva
-            </Link>
-          </div>
-        </form>
-      </div>
-
-      {/* Nota de seguridad */}
-      <p style={{ textAlign: "center", marginTop: "24px", fontFamily: "var(--font-mono)", fontSize: "10.5px", color: "var(--muted)", letterSpacing: "0.3px", lineHeight: "1.6" }}>
-        Tu contraseña maestra nunca se envía al servidor.<br/>
-        La clave se deriva localmente con PBKDF2-SHA256.
-      </p>
-    </div>
-  )
-}
-
-export default function Login() {
   return (
     <>
       <Header />
-      <main style={{ minHeight: "calc(100vh - 73px - 65px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "60px 24px" }}>
-        <Suspense fallback={<div style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>Cargando…</div>}>
-          <LoginForm />
-        </Suspense>
+      <main className="min-h-[calc(100vh-200px)] flex items-center justify-center px-5 py-10">
+        <div className="w-full max-w-[460px] flex flex-col gap-6">
+          <div className="flex justify-center">
+            <div className="w-[72px] h-[72px] rounded-full grid place-items-center"
+                 style={{ background: "radial-gradient(circle at 35% 30%, oklch(0.74 0.14 55), oklch(0.48 0.13 40))" }}>
+              {step === "credentials"
+                ? <LockClosedIcon className="w-9 h-9" style={{ color: "rgba(20,15,10,0.7)" }} />
+                : <KeyIcon        className="w-9 h-9" style={{ color: "rgba(20,15,10,0.7)" }} />}
+            </div>
+          </div>
+
+          <div>
+            <h1 className="font-serif font-normal text-[32px] m-0 mb-[6px] text-ivory">
+              {step === "credentials" ? "Iniciar sesión" : "Verificación en dos pasos"}
+            </h1>
+            <p className="font-mono text-xs text-muted m-0">
+              {step === "credentials"
+                ? "Tu contraseña nunca sale de este dispositivo"
+                : "Introduce el código de tu app de autenticación"}
+            </p>
+          </div>
+
+          {error && <ErrorMessage>{error}</ErrorMessage>}
+
+          {step === "credentials" && (
+            <form onSubmit={handleLogin} className="flex flex-col gap-[14px]">
+              <Input label="Correo electrónico" type="email" value={email}
+                onChange={e => setEmail(e.target.value)} required placeholder="tu@email.com" autoComplete="email" />
+              <Input label="Contraseña maestra" type="password" value={password}
+                onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
+              <Button type="submit" disabled={loading}>
+                {loading ? "Entrando…" : "Entrar →"}
+              </Button>
+            </form>
+          )}
+
+          {step === "totp" && (
+            <form onSubmit={handle2FA} className="flex flex-col gap-[14px]">
+              <Input label="Código de 6 dígitos" value={totpCode} onChange={e => setTotpCode(e.target.value)}
+                required inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="123456" autoFocus
+                style={{ fontFamily: "var(--font-mono)", fontSize: "18px", letterSpacing: "0.5em", textAlign: "center" }} />
+              <Button type="submit" disabled={loading || totpCode.length !== 6}>
+                {loading ? "Verificando…" : "Verificar →"}
+              </Button>
+            </form>
+          )}
+
+          <div className="flex justify-between items-center font-mono text-xs">
+            <Link href="/register"  className="text-muted hover:text-ivory transition-colors">Crear cuenta</Link>
+            <Link href="/recuperar" className="text-muted hover:text-ivory transition-colors">¿Olvidaste tu contraseña?</Link>
+          </div>
+        </div>
       </main>
       <Footer />
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </>
   )
 }

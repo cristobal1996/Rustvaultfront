@@ -1,213 +1,142 @@
 // components/dashboard/sections/Vaults.tsx
 "use client"
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
+import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline"
+
+import { apiGet, apiPost } from "@/lib/api"
+import { getMUK } from "@/lib/muk"
+import { generateAndEncryptVaultKey } from "@/lib/crypto"
+import { log } from "@/lib/log"
+import { SectionHeader } from "@/components/ui/SectionHeader"
+import { Loading } from "@/components/ui/Loading"
+import { EmptyState } from "@/components/ui/EmptyState"
+import { Button } from "@/components/ui/Button"
 
 interface Vault {
-  id:        string
-  name:      string
-  vault_type: string
-  user_role:  string
+  id:           string
+  name:         string
+  vault_type:   string
+  user_role:    string
   entry_count?: number
 }
 
 interface Props {
-  token:    string
   onSelect: (vaultId: string, vaultName: string) => void
 }
 
-export function Vaults({ token, onSelect }: Props) {
+const ROLE_COLOR: Record<string, string> = {
+  owner:  "var(--rust-bright)",
+  admin:  "oklch(0.78 0.08 85)",
+  editor: "oklch(0.78 0.08 170)",
+  viewer: "var(--muted)",
+}
+
+export function Vaults({ onSelect }: Props) {
   const [vaults,  setVaults]  = useState<Vault[]>([])
-  const [loading, setLoading] = useState(false)
-  const [loaded,  setLoaded]  = useState(false)
+  const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState("")
   const [creating, setCreating] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
-  async function load() {
-    if (loaded) return
+  const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await fetch("/api/vaults", { headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
-      setVaults(Array.isArray(data) ? data : (data.data ?? []))
-      setLoaded(true)
+      const data = await apiGet<Vault[] | { data: Vault[] }>("/api/vaults")
+      setVaults(Array.isArray(data) ? data : data.data ?? [])
+    } catch (e) {
+      log.error("load vaults", e)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  if (!loaded && !loading) { load() }
+  useEffect(() => { load() }, [load])
 
   async function createVault() {
     if (!newName.trim()) return
+
+    const mukHex = getMUK()
+    if (!mukHex) {
+      alert("Sesión expirada. Vuelve a iniciar sesión.")
+      return
+    }
+
     setCreating(true)
     try {
-      const res = await fetch("/api/vaults", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({
-          name:      newName.trim(),
-          vault_type: "personal",
-          encrypted_vault_key: { nonce: "000000000000000000000000", ciphertext: "00000000000000000000000000000000" },
-        }),
+      const encryptedVaultKey = await generateAndEncryptVaultKey(mukHex)
+      await apiPost("/api/vaults", {
+        name:                newName.trim(),
+        vault_type:          "personal",
+        encrypted_vault_key: encryptedVaultKey,
       })
-      if (res.ok) {
-        setNewName("")
-        setShowForm(false)
-        setLoaded(false)
-      }
+      setNewName("")
+      setShowForm(false)
+      load()
+    } catch (e) {
+      log.error("create vault", e)
     } finally {
       setCreating(false)
     }
   }
 
-  const ROLE_COLOR: Record<string, string> = {
-    owner:  "var(--rust-bright)",
-    admin:  "oklch(0.78 0.08 85)",
-    editor: "oklch(0.78 0.08 170)",
-    viewer: "var(--muted)",
-  }
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-      {/* Cabecera */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.4px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 6px" }}>
-            Mis vaults
-          </p>
-          <h2 style={{ fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: "32px", letterSpacing: "-0.4px", margin: 0 }}>
-            Carpetas <em style={{ fontStyle: "italic", color: "var(--rust-bright)" }}>seguras</em>
-          </h2>
-        </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          style={{
-            background:   "var(--rust)",
-            color:        "#fff",
-            border:       "none",
-            borderRadius: "10px",
-            padding:      "10px 16px",
-            fontSize:     "13.5px",
-            fontWeight:   500,
-            display:      "flex",
-            alignItems:   "center",
-            gap:          "8px",
-            cursor:       "pointer",
-          }}
-        >
-          <span style={{ fontSize: "18px", lineHeight: 1 }}>+</span>
-          Nuevo vault
-        </button>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        eyebrow="Mis bóvedas"
+        title="Bóvedas"
+        accent="seguras"
+        right={
+          <Button onClick={() => setShowForm(v => !v)} className="px-4 py-[10px] text-[13.5px]">
+            <PlusIcon className="w-[18px] h-[18px]" />
+            Nueva bóveda
+          </Button>
+        }
+      />
 
-      {/* Formulario nuevo vault */}
       {showForm && (
-        <div style={{
-          border: "1px solid var(--line-2)", borderRadius: "12px",
-          padding: "20px", background: "var(--bg-elev)",
-          display: "flex", gap: "12px", alignItems: "center",
-        }}>
-          <input
-            type="text"
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
+        <div className="card flex gap-3 items-center p-5">
+          <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
             onKeyDown={e => e.key === "Enter" && createVault()}
-            placeholder="Nombre del vault…"
-            autoFocus
-            style={{
-              flex: 1, background: "var(--bg)", border: "1px solid var(--line-2)",
-              borderRadius: "8px", padding: "10px 12px", fontSize: "14px",
-              color: "var(--ivory)", outline: "none",
-            }}
-          />
-          <button
-            onClick={createVault}
-            disabled={creating}
-            style={{
-              background: "var(--rust)", color: "#fff", border: "none",
-              borderRadius: "8px", padding: "10px 16px", fontSize: "13.5px",
-              cursor: creating ? "not-allowed" : "pointer",
-            }}
-          >
+            placeholder="Nombre de la bóveda…" autoFocus
+            className="input-base flex-1" />
+          <Button onClick={createVault} disabled={creating} className="px-4 py-[10px]">
             {creating ? "Creando…" : "Crear"}
-          </button>
-          <button
-            onClick={() => setShowForm(false)}
-            style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: "18px", lineHeight: 1, padding: "4px" }}
-          >
-            ×
+          </Button>
+          <button onClick={() => setShowForm(false)}
+            className="text-muted text-lg leading-none p-1 hover:text-ivory transition-colors">
+            <XMarkIcon className="w-5 h-5" />
           </button>
         </div>
       )}
 
-      {/* Lista */}
-      {loading ? (
-        <div style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>Cargando vaults…</div>
-      ) : vaults.length === 0 ? (
-        <div style={{
-          border: "1px dashed var(--line-2)", borderRadius: "14px",
-          padding: "48px", textAlign: "center",
-        }}>
-          <p style={{ fontFamily: "var(--font-serif)", fontSize: "24px", color: "var(--ivory-dim)", margin: "0 0 8px" }}>
-            Sin vaults todavía
-          </p>
-          <p style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--muted)", margin: 0 }}>
-            Crea tu primer vault para empezar a guardar contraseñas
-          </p>
-        </div>
+      {loading ? <Loading text="Cargando bóvedas…" />
+       : vaults.length === 0 ? (
+        <EmptyState title="Sin bóvedas todavía" subtitle="Crea tu primera bóveda para empezar a guardar contraseñas" />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "16px" }}>
-          {vaults.map(vault => (
-            <button
-              key={vault.id}
-              onClick={() => onSelect(vault.id, vault.name)}
-              style={{
-                border:        "1px solid var(--line)",
-                borderRadius:  "14px",
-                padding:       "22px",
-                background:    "var(--bg-elev)",
-                textAlign:     "left",
-                cursor:        "pointer",
-                display:       "flex",
-                flexDirection: "column",
-                gap:           "12px",
-                transition:    "transform 140ms ease, border-color 140ms ease",
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.transform   = "translateY(-2px)"
-                e.currentTarget.style.borderColor = "#4d4136"
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.transform   = "translateY(0)"
-                e.currentTarget.style.borderColor = "var(--line)"
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontFamily: "var(--font-serif)", fontSize: "22px", color: "var(--ivory)" }}>
-                  {vault.name}
-                </span>
-                <span style={{
-                  fontFamily: "var(--font-mono)", fontSize: "10px",
-                  letterSpacing: "1px", textTransform: "uppercase",
-                  color: ROLE_COLOR[vault.user_role] ?? "var(--muted)",
-                  padding: "3px 7px", border: `1px solid ${ROLE_COLOR[vault.user_role] ?? "var(--line-2)"}33`,
-                  borderRadius: "5px",
-                }}>
-                  {vault.user_role}
-                </span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "10.5px", color: "var(--muted)", textTransform: "uppercase", letterSpacing: "1px" }}>
-                  {vault.vault_type}
-                </span>
-                <span style={{ width: "3px", height: "3px", borderRadius: "50%", background: "var(--line-2)" }} />
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "10.5px", color: "var(--muted)" }}>
-                  Ver entradas →
-                </span>
-              </div>
-            </button>
-          ))}
+        <div className="grid grid-cols-2 gap-4">
+          {vaults.map(vault => {
+            const roleColor = ROLE_COLOR[vault.user_role] ?? "var(--muted)"
+            return (
+              <button key={vault.id} onClick={() => onSelect(vault.id, vault.name)}
+                className="card text-left p-[22px] flex flex-col gap-3 cursor-pointer
+                           hover:-translate-y-[2px] hover:border-[#4d4136] transition-[transform,border-color] duration-150">
+                <div className="flex items-center justify-between">
+                  <span className="font-serif text-[22px] text-ivory">{vault.name}</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[1px] px-[7px] py-[3px] rounded-md"
+                        style={{ color: roleColor, border: `1px solid ${roleColor}33` }}>
+                    {vault.user_role}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10.5px] text-muted uppercase tracking-[1px]">
+                    {vault.vault_type}
+                  </span>
+                  <span className="w-[3px] h-[3px] rounded-full bg-line-2" />
+                  <span className="font-mono text-[10.5px] text-muted">Ver entradas →</span>
+                </div>
+              </button>
+            )
+          })}
         </div>
       )}
     </div>

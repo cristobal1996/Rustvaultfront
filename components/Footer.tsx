@@ -1,30 +1,19 @@
 // components/Footer.tsx
 export function Footer() {
   return (
-    <footer style={{ borderTop: "1px solid var(--line)", marginTop: "40px" }}>
-      <div
-        style={{
-          maxWidth:       "1320px",
-          margin:         "0 auto",
-          padding:        "32px 40px",
-          display:        "flex",
-          alignItems:     "center",
-          justifyContent: "space-between",
-          color:          "var(--muted)",
-          fontFamily:     "var(--font-mono)",
-          fontSize:       "11px",
-          letterSpacing:  "0.6px",
-        }}
-      >
+    <footer className="border-t border-line mt-10">
+      <div className="max-w-container mx-auto px-5 sm:px-10 py-6 sm:py-8
+                      flex flex-col sm:flex-row items-center justify-between gap-4
+                      font-mono text-[11px] tracking-[0.6px] text-muted text-center sm:text-left">
         <span>© 2025 RustVault — Proyecto de código abierto</span>
-        <div style={{ display: "flex", alignItems: "center", gap: "28px" }}>
-          <a href="/login"    style={{ color: "var(--muted)", transition: "color 160ms" }}>Entrar</a>
-          <a href="/register" style={{ color: "var(--muted)", transition: "color 160ms" }}>Registrarse</a>
+        <div className="flex items-center gap-5 sm:gap-7">
+          <a href="/login"    className="hover:text-ivory transition-colors">Entrar</a>
+          <a href="/register" className="hover:text-ivory transition-colors">Registrarse</a>
           <a
-            href="https://github.com"
+            href="https://github.com/cristobal1996/Rustvaultback"
             target="_blank"
             rel="noopener noreferrer"
-            style={{ color: "var(--muted)", transition: "color 160ms" }}
+            className="hover:text-ivory transition-colors"
           >
             GitHub
           </a>

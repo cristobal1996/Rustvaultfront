@@ -2,10 +2,8 @@
 "use client"
 import { useState, useEffect } from "react"
 import { getMUK } from "@/lib/muk"
-
-interface Props { token: string }
-
-// ── Tipos ─────────────────────────────────────────────────────────
+import { apiGet, apiPost, getToken } from "@/lib/api"
+import { log } from "@/lib/log"
 
 interface Password {
   id:    string
@@ -109,22 +107,8 @@ async function encryptForRecipient(plaintext: Uint8Array, recipientPubHex: strin
 
 // ── Componente ────────────────────────────────────────────────────
 
-export function Compartidos({ token: tokenProp }: Props) {
+export function Compartidos() {
   const mukHex = getMUK()
-  const [token, setToken] = useState(tokenProp)
-
-  useEffect(() => {
-    // Si el prop llega vacío, leerlo del localStorage
-    if (!token) {
-      const t = localStorage.getItem("rv_token") ?? ""
-      setToken(t)
-    }
-  }, [tokenProp])
-
-  // Actualizar cuando cambia el prop
-  useEffect(() => {
-    if (tokenProp) setToken(tokenProp)
-  }, [tokenProp])
 
   const [tab,       setTab]       = useState<"inbox" | "sent" | "share">("inbox")
   const [inbox,     setInbox]     = useState<InboxItem[]>([])
@@ -156,15 +140,15 @@ export function Compartidos({ token: tokenProp }: Props) {
   const [actionMsg,   setActionMsg]   = useState<{ ok: boolean; text: string } | null>(null)
 
   useEffect(() => {
-    if (token) {
+    if (getToken()) {
       loadAll()
       ensureKeysExist()
     }
-  }, [token])
+  }, [])
 
   async function ensureKeysExist() {
     try {
-      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      const profile = await apiGet<{ pub_key?: string; encrypted_priv_key?: any }>("/api/account/me")
       if (profile.pub_key && profile.encrypted_priv_key) { setHasKeys(true); return }  // ya tiene par completo
 
       const mukHex = getMUK()
@@ -189,15 +173,11 @@ export function Compartidos({ token: tokenProp }: Props) {
       const privCt     = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, privBytes)
       const encPrivKey = { nonce: bytesToHex(nonce), ciphertext: bytesToHex(new Uint8Array(privCt)) }
 
-      await fetch("/api/account/keys", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ pub_key: pubHex, encrypted_priv_key: encPrivKey }),
-      })
-      console.log("Claves generadas y guardadas OK")
+      await apiPost("/api/account/keys", { pub_key: pubHex, encrypted_priv_key: encPrivKey })
+      log.info("Claves generadas y guardadas OK")
       setHasKeys(true)
     } catch (e) {
-      console.warn("No se pudieron generar las claves:", e)
+      log.warn("No se pudieron generar las claves:", e)
       setHasKeys(false)
     }
   }
@@ -211,18 +191,17 @@ export function Compartidos({ token: tokenProp }: Props) {
   async function loadAll() {
     setLoading(true)
     try {
-      const [inboxRes, sentRes, pwRes, profileRes] = await Promise.all([
-        fetch("/api/sharing/inbox",  { headers: { Authorization: `Bearer ${token}` } }),
-        fetch("/api/sharing/sent",   { headers: { Authorization: `Bearer ${token}` } }),
-        fetch("/api/passwords",      { headers: { Authorization: `Bearer ${token}` } }),
-        fetch("/api/account/me",     { headers: { Authorization: `Bearer ${token}` } }),
+      const [inboxRes, sentRes, pwRes, profileRes] = await Promise.allSettled([
+        apiGet<InboxItem[]>("/api/sharing/inbox"),
+        apiGet<SentItem[]>("/api/sharing/sent"),
+        apiGet<{ data: Password[] }>("/api/passwords"),
+        apiGet<{ invite_code?: string }>("/api/account/me"),
       ])
-      if (inboxRes.ok)   setInbox(await inboxRes.json())
-      if (sentRes.ok)    setSent(await sentRes.json())
-      if (pwRes.ok)      setPasswords((await pwRes.json()).data ?? [])
-      if (profileRes.ok) {
-        const p = await profileRes.json()
-        if (p.invite_code) setMyCode(p.invite_code)
+      if (inboxRes.status === "fulfilled")  setInbox(inboxRes.value)
+      if (sentRes.status === "fulfilled")   setSent(sentRes.value)
+      if (pwRes.status === "fulfilled")     setPasswords(pwRes.value.data ?? [])
+      if (profileRes.status === "fulfilled" && profileRes.value.invite_code) {
+        setMyCode(profileRes.value.invite_code)
       }
     } finally { setLoading(false) }
   }
@@ -233,9 +212,8 @@ export function Compartidos({ token: tokenProp }: Props) {
     setFoundUser(null)
     setSearchError(null)
     try {
-      const res  = await fetch(`/api/users/search?q=${encodeURIComponent(codeInput.trim())}`, { headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
-      const arr  = Array.isArray(data) ? data : []
+      const data = await apiGet<FoundUser[] | FoundUser>(`/api/users/search?q=${encodeURIComponent(codeInput.trim())}`)
+      const arr  = Array.isArray(data) ? data : [data]
       if (!arr.length) setSearchError(`No se encontró ningún usuario con el código ${codeInput.trim().toUpperCase()}`)
       else setFoundUser(arr[0])
     } catch { setSearchError("Error de conexión") }
@@ -260,29 +238,23 @@ export function Compartidos({ token: tokenProp }: Props) {
       // Re-cifrar con la clave pública del destinatario (ECIES)
       const encryptedForRecipient = await encryptForRecipient(plainBytes, foundUser.pub_key)
 
-      const res = await fetch("/api/sharing/send", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({
+      try {
+        await apiPost("/api/sharing/send", {
           password_id:             pw.id,
           recipient_invite_code:   codeInput.trim(),
           encrypted_for_recipient: encryptedForRecipient,
           title_hint:              pw.title,
           message:                 message.trim() || null,
           permission,
-        }),
-      })
-
-      if (res.ok) {
+        })
         setSendMsg({ ok: true, text: `Contraseña compartida con ${foundUser.email_hint}` })
         setFoundUser(null)
         setCodeInput("")
         setMessage("")
         setSelectedPw("")
         loadAll()
-      } else {
-        const err = await res.json()
-        throw new Error(err.error ?? "Error al compartir")
+      } catch (err) {
+        throw new Error(err instanceof Error ? err.message : "Error al compartir")
       }
     } catch (e: unknown) {
       setSendMsg({ ok: false, text: e instanceof Error ? e.message : "Error desconocido" })
@@ -297,15 +269,12 @@ export function Compartidos({ token: tokenProp }: Props) {
     if (!mukHex) return
 
     try {
-      const res  = await fetch(`/api/sharing/${item.id}/view`, { headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
-      if (!res.ok) return
-
+      const data = await apiGet<any>(`/api/sharing/${item.id}/view`)
       const blob = data.encrypted
       if (!blob?.ephemeral_pub) return
 
       // 1. Obtener clave privada cifrada del perfil
-      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      const profile = await apiGet<any>("/api/account/me")
       if (!profile.encrypted_priv_key) return
 
       // 2. Descifrar clave privada con MUK
@@ -349,7 +318,7 @@ export function Compartidos({ token: tokenProp }: Props) {
         }
       }
     } catch (e) {
-      console.error("viewShared error:", e)
+      log.error("viewShared error:", e)
     }
   }
 
@@ -359,13 +328,7 @@ export function Compartidos({ token: tokenProp }: Props) {
     setActionMsg(null)
 
     try {
-      const res  = await fetch(`/api/sharing/${id}/accept`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setActionMsg({ ok: false, text: data.error ?? "Error al aceptar" })
-        return
-      }
+      const data = await apiPost<any>(`/api/sharing/${id}/accept`)
 
       if (!data.encrypted) {
         setActionMsg({ ok: false, text: "La respuesta no incluye contenido cifrado" })
@@ -373,7 +336,7 @@ export function Compartidos({ token: tokenProp }: Props) {
       }
 
       // 1. Obtener la clave privada cifrada del perfil
-      const profile = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      const profile = await apiGet<{ encrypted_priv_key?: any }>("/api/account/me")
       if (!profile.encrypted_priv_key) {
         setActionMsg({ ok: false, text: "No tienes clave privada registrada — abre Compartidos para generarla" })
         return
@@ -427,14 +390,24 @@ export function Compartidos({ token: tokenProp }: Props) {
 
       // 5. Re-cifrar con nuestra MUK y guardar como contraseña propia
       const encrypted = await aesEncrypt(plain, mukHex)
-      await fetch("/api/passwords", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({
-          title:      data.title_hint ?? "Contraseña compartida",
-          entry_type: "login",
-          encrypted,
-        }),
+
+      // Extraer el dominio del JSON descifrado para que la extensión
+      // pueda autocompletar después
+      let domain: string | null = null
+      try {
+        const content = JSON.parse(plain) as { url?: string }
+        if (content.url) {
+          domain = extractDomain(content.url)
+        }
+      } catch {
+        // Si el plain no es JSON parseable, lo dejamos sin domain
+      }
+
+      await apiPost("/api/passwords", {
+        title:      data.title_hint ?? "Contraseña compartida",
+        domain,                           // ← ahora SÍ se pasa el dominio
+        entry_type: "login",
+        encrypted,
       })
 
       setActionMsg({ ok: true, text: "✓ Contraseña aceptada y guardada en tus entradas" })
@@ -443,13 +416,13 @@ export function Compartidos({ token: tokenProp }: Props) {
       loadAll()
 
     } catch (e: unknown) {
-      console.error("acceptShare error:", e)
+      log.error("acceptShare error:", e)
       setActionMsg({ ok: false, text: e instanceof Error ? e.message : "Error al aceptar" })
     } finally { setAccepting(false) }
   }
 
   async function rejectShare(id: string) {
-    await fetch(`/api/sharing/${id}/reject`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
+    await apiPost(`/api/sharing/${id}/reject`)
     setInbox(prev => prev.filter(i => i.id !== id))
     setViewItem(null)
     loadAll()
@@ -496,17 +469,22 @@ export function Compartidos({ token: tokenProp }: Props) {
       )}
 
       {myCode && (
-        <div style={{ border: "1px solid var(--line)", borderRadius: "12px", padding: "16px 20px", background: "var(--bg-elev)", display: "flex", alignItems: "center", gap: "16px" }}>
-          <div style={{ flex: 1 }}>
-            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.4px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 6px" }}>Mi código</p>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: "22px", letterSpacing: "0.1em", color: "var(--rust-bright)", fontWeight: 500 }}>{myCode}</span>
+        <div className="card-padded p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="label-mono m-0 mb-[6px]">Mi código</p>
+            <div className="flex items-center gap-[10px] flex-wrap">
+              <span className="font-mono text-[18px] sm:text-[22px] tracking-[0.1em] text-rust-bright font-medium break-all">
+                {myCode}
+              </span>
               <button onClick={copyMyCode}
-                style={{ background: codeCopied ? "color-mix(in oklab, var(--patina) 15%, transparent)" : "var(--bg)", border: `1px solid ${codeCopied ? "var(--patina)" : "var(--line-2)"}`, borderRadius: "6px", padding: "4px 10px", color: codeCopied ? "var(--patina)" : "var(--muted)", cursor: "pointer", fontSize: "11px", fontFamily: "var(--font-mono)" }}>
+                className={`rounded-md px-[10px] py-1 text-[11px] font-mono cursor-pointer flex-shrink-0 transition-colors
+                            ${codeCopied
+                              ? "border border-patina text-patina bg-[color-mix(in_oklab,var(--patina)_15%,transparent)]"
+                              : "border border-line-2 text-muted bg-bg hover:text-ivory"}`}>
                 {codeCopied ? "✓ Copiado" : "Copiar"}
               </button>
             </div>
-            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--muted)", margin: "6px 0 0", lineHeight: "1.5" }}>
+            <p className="font-mono text-[10px] text-muted m-0 mt-[6px] leading-[1.5]">
               Comparte este código para que puedan enviarte contraseñas
             </p>
           </div>
@@ -514,14 +492,17 @@ export function Compartidos({ token: tokenProp }: Props) {
       )}
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: "4px", background: "var(--bg-elev)", borderRadius: "10px", padding: "4px", border: "1px solid var(--line)" }}>
+      <div className="flex gap-1 bg-bg-elev rounded-[10px] p-1 border border-line">
         {[
           { id: "inbox" as const, label: `Recibidas${inbox.length ? ` (${inbox.length})` : ""}` },
           { id: "sent"  as const, label: "Enviadas" },
           { id: "share" as const, label: "Compartir" },
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            style={{ flex: 1, padding: "8px", borderRadius: "7px", border: "none", background: tab === t.id ? "var(--bg)" : "transparent", color: tab === t.id ? "var(--ivory)" : "var(--muted)", fontSize: "13px", cursor: "pointer", fontWeight: tab === t.id ? 500 : 400, transition: "all 140ms" }}>
+            className={`flex-1 py-2 px-2 rounded-[7px] border-none text-xs sm:text-[13px] cursor-pointer transition-all duration-150 whitespace-nowrap
+                        ${tab === t.id
+                          ? "bg-bg text-ivory font-medium"
+                          : "bg-transparent text-muted"}`}>
             {t.label}
           </button>
         ))}
@@ -543,33 +524,36 @@ export function Compartidos({ token: tokenProp }: Props) {
               <p style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--muted)", margin: 0 }}>Sin contraseñas recibidas</p>
             </div>
           ) : inbox.map(item => (
-            <div key={item.id} style={{ border: "1px solid var(--line)", borderRadius: "12px", padding: "16px 18px", background: "var(--bg-elev)" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--ivory)" }}>{item.title_hint ?? "Contraseña compartida"}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase", color: statusColor(item.status), padding: "2px 6px", border: `1px solid ${statusColor(item.status)}33`, borderRadius: "4px" }}>{item.permission}</span>
+            <div key={item.id} className="card-padded p-4 sm:p-[18px]">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center flex-wrap gap-2 mb-1">
+                    <span className="text-sm font-medium text-ivory">{item.title_hint ?? "Contraseña compartida"}</span>
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
+                      style={{ color: statusColor(item.status), border: `1px solid ${statusColor(item.status)}33` }}>
+                      {item.permission}
+                    </span>
                   </div>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--muted)" }}>
+                  <div className="font-mono text-[11px] text-muted">
                     De {item.sender_email_hint} · Caduca {new Date(item.expires_at).toLocaleDateString("es")}
                   </div>
                   {item.message && (
-                    <p style={{ fontSize: "12px", color: "var(--ivory-dim)", margin: "8px 0 0", fontStyle: "italic" }}>"{item.message}"</p>
+                    <p className="text-xs text-ivory-dim mt-2 italic break-words">"{item.message}"</p>
                   )}
                 </div>
-                <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                <div className="flex gap-[6px] flex-shrink-0 flex-wrap sm:flex-nowrap">
                   <button onClick={() => viewShared(item)}
-                    style={{ background: "transparent", border: "1px solid var(--line-2)", borderRadius: "7px", padding: "6px 10px", fontSize: "12px", color: "var(--ivory-dim)", cursor: "pointer" }}>
+                    className="bg-transparent border border-line-2 rounded-md px-[10px] py-[6px] text-xs text-ivory-dim cursor-pointer hover:text-ivory transition-colors">
                     Ver
                   </button>
                   {item.permission === "copy" && (
                     <button onClick={() => acceptShare(item.id)} disabled={accepting}
-                      style={{ background: "var(--rust)", color: "#fff", border: "none", borderRadius: "7px", padding: "6px 12px", fontSize: "12px", cursor: "pointer" }}>
+                      className="bg-rust text-white border-none rounded-md px-3 py-[6px] text-xs cursor-pointer hover:bg-rust-bright transition-colors disabled:opacity-50">
                       {accepting ? "…" : "Aceptar"}
                     </button>
                   )}
                   <button onClick={() => rejectShare(item.id)}
-                    style={{ background: "transparent", border: "1px solid rgba(220,38,38,0.25)", borderRadius: "7px", padding: "6px 10px", fontSize: "12px", color: "#f87171", cursor: "pointer" }}>
+                    className="bg-transparent border border-[rgba(220,38,38,0.25)] rounded-md px-[10px] py-[6px] text-xs text-[#f87171] cursor-pointer hover:bg-[rgba(220,38,38,0.08)] transition-colors">
                     Rechazar
                   </button>
                 </div>
@@ -649,7 +633,7 @@ export function Compartidos({ token: tokenProp }: Props) {
 
       {/* ── Compartir ── */}
       {tab === "share" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px", maxWidth: "520px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px", width: "100%", maxWidth: "520px", minWidth: 0 }}>
           {sendMsg && (
             <div style={{ background: sendMsg.ok ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)", border: `1px solid ${sendMsg.ok ? "rgba(22,163,74,0.25)" : "rgba(220,38,38,0.2)"}`, borderRadius: "8px", padding: "10px 14px", fontSize: "13px", color: sendMsg.ok ? "#4ade80" : "#f87171" }}>
               {sendMsg.text}
@@ -667,10 +651,12 @@ export function Compartidos({ token: tokenProp }: Props) {
             <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "6px" }}>
               Contraseña a compartir
             </label>
-            <select value={selectedPw} onChange={e => setSelectedPw(e.target.value)} style={inp}>
+            <select value={selectedPw} onChange={e => setSelectedPw(e.target.value)} style={{ ...inp, maxWidth: "100%" }}>
               <option value="">Selecciona una contraseña…</option>
               {passwords.map(p => (
-                <option key={p.id} value={p.id}>{p.title}{p.domain ? ` (${p.domain})` : ""}</option>
+                <option key={p.id} value={p.id}>
+                  {formatPasswordOption(p.title, p.domain)}
+                </option>
               ))}
             </select>
           </div>
@@ -830,4 +816,43 @@ function PasswordField({ value }: { value: string }) {
       <CopyBtn text={value} />
     </>
   )
+}
+
+// ── Helper para extraer el dominio de una URL ─────────────────────
+// Soporta URLs completas (https://github.com/user) y dominios sueltos (github.com)
+function extractDomain(input: string): string | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+
+  try {
+    // Si tiene esquema (https://, http://, etc), usar URL
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`)
+    return url.hostname.replace(/^www\./, "")
+  } catch {
+    // No es una URL parseable, devolver tal cual sin www
+    return trimmed.replace(/^www\./, "").split("/")[0] || null
+  }
+}
+
+// ── Helper para formatear texto del <option> del dropdown ─────────
+// Evita redundancia (title == domain) y trunca textos largos
+// para que el dropdown no se desborde en móvil.
+function formatPasswordOption(title: string, domain: string | null): string {
+  const MAX_LEN = 32
+
+  // Normalizar para comparar: sin www, en minúsculas
+  const normTitle  = title.toLowerCase().replace(/^www\./, "").trim()
+  const normDomain = (domain ?? "").toLowerCase().replace(/^www\./, "").trim()
+
+  // Si title y domain son el mismo (o muy parecidos), mostrar solo el title
+  let label = (normDomain && normTitle !== normDomain)
+    ? `${title} (${domain})`
+    : title
+
+  // Truncar si es muy largo
+  if (label.length > MAX_LEN) {
+    label = label.slice(0, MAX_LEN - 1) + "…"
+  }
+
+  return label
 }

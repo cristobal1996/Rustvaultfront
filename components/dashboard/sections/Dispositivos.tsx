@@ -1,125 +1,103 @@
 // components/dashboard/sections/Dispositivos.tsx
 "use client"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
+import {
+  GlobeAltIcon, DevicePhoneMobileIcon, ComputerDesktopIcon,
+  CommandLineIcon, CpuChipIcon, ShieldCheckIcon,
+} from "@heroicons/react/24/outline"
+
+import { apiGet, apiDelete } from "@/lib/api"
+import { log } from "@/lib/log"
+import { SectionHeader } from "@/components/ui/SectionHeader"
+import { Loading } from "@/components/ui/Loading"
+import { EmptyState } from "@/components/ui/EmptyState"
 
 interface Device {
-  id:          string
-  name:        string
-  platform:    string
-  is_trusted:  boolean
+  id:           string
+  name:         string
+  platform:     string
+  is_trusted:   boolean
   last_seen_at: string | null
-  created_at:  string
+  created_at:   string
 }
 
-interface Props { token: string }
+const PLATFORM_ICON: Record<string, typeof GlobeAltIcon> = {
+  web:     GlobeAltIcon,
+  mobile:  DevicePhoneMobileIcon,
+  desktop: ComputerDesktopIcon,
+  cli:     CommandLineIcon,
+}
 
-export function Dispositivos({ token }: Props) {
+export function Dispositivos() {
   const [devices,  setDevices]  = useState<Device[]>([])
   const [loading,  setLoading]  = useState(true)
   const [revoking, setRevoking] = useState<string | null>(null)
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await fetch("/api/devices", { headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
+      const data = await apiGet<Device[]>("/api/devices")
       setDevices(Array.isArray(data) ? data : [])
+    } catch (e) {
+      log.error("load devices", e)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   async function revoke(id: string) {
     setRevoking(id)
     try {
-      await fetch(`/api/devices/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } })
+      await apiDelete(`/api/devices/${id}`)
       setDevices(ds => ds.filter(d => d.id !== id))
+    } catch (e) {
+      log.error("revoke device", e)
     } finally {
       setRevoking(null)
     }
   }
 
-  const platformIcon = (platform: string) => {
-    if (platform === "web")     return "🌐"
-    if (platform === "mobile")  return "📱"
-    if (platform === "desktop") return "💻"
-    if (platform === "cli")     return "⌨️"
-    return "🔌"
-  }
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-      <div>
-        <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.4px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 6px" }}>
-          Seguridad
-        </p>
-        <h2 style={{ fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: "32px", letterSpacing: "-0.4px", margin: 0 }}>
-          Dispositivos <em style={{ fontStyle: "italic", color: "var(--rust-bright)" }}>activos</em>
-        </h2>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SectionHeader eyebrow="Seguridad" title="Dispositivos" accent="activos" />
 
-      {loading ? (
-        <div style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>Cargando dispositivos…</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {devices.map(device => (
-            <div
-              key={device.id}
-              style={{
-                border:       "1px solid var(--line)",
-                borderRadius: "12px",
-                padding:      "18px 20px",
-                background:   "var(--bg-elev)",
-                display:      "flex",
-                alignItems:   "center",
-                gap:          "16px",
-              }}
-            >
-              <span style={{ fontSize: "24px", flexShrink: 0 }}>{platformIcon(device.platform)}</span>
+      {loading ? <Loading text="Cargando dispositivos…" /> : (
+        <div className="flex flex-col gap-[10px]">
+          {devices.map(device => {
+            const Icon = PLATFORM_ICON[device.platform] ?? CpuChipIcon
+            return (
+              <div key={device.id} className="card-padded flex items-center gap-4 p-[18px]">
+                <Icon className="w-[22px] h-[22px] text-ivory-dim" />
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "3px" }}>
-                  <span style={{ fontSize: "15px", color: "var(--ivory)", fontWeight: 500 }}>{device.name}</span>
-                  {device.is_trusted && (
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase", color: "var(--patina)", padding: "2px 6px", border: "1px solid color-mix(in oklab, var(--patina) 40%, transparent)", borderRadius: "4px" }}>
-                      De confianza
-                    </span>
-                  )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-[10px] mb-[3px]">
+                    <span className="text-[15px] text-ivory font-medium">{device.name}</span>
+                    {device.is_trusted && (
+                      <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-[1px]
+                                       text-patina border border-[color-mix(in_oklab,var(--patina)_40%,transparent)]
+                                       rounded px-[6px] py-[2px]">
+                        <ShieldCheckIcon className="w-[10px] h-[10px]" />
+                        De confianza
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-mono text-[11px] text-muted">
+                    {device.platform} · {device.last_seen_at
+                      ? `Último acceso: ${new Date(device.last_seen_at).toLocaleDateString("es")}`
+                      : "Sin actividad"}
+                  </span>
                 </div>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--muted)" }}>
-                  {device.platform} · {device.last_seen_at ? `Último acceso: ${new Date(device.last_seen_at).toLocaleDateString("es")}` : "Sin actividad"}
-                </span>
+
+                <button onClick={() => revoke(device.id)} disabled={revoking === device.id} className="btn-danger">
+                  {revoking === device.id ? "…" : "Revocar"}
+                </button>
               </div>
+            )
+          })}
 
-              <button
-                onClick={() => revoke(device.id)}
-                disabled={revoking === device.id}
-                style={{
-                  background:   "transparent",
-                  border:       "1px solid rgba(220,38,38,0.25)",
-                  borderRadius: "8px",
-                  padding:      "7px 12px",
-                  fontSize:     "12px",
-                  color:        "#f87171",
-                  cursor:       revoking === device.id ? "not-allowed" : "pointer",
-                  fontFamily:   "var(--font-mono)",
-                  transition:   "background 140ms ease",
-                }}
-              >
-                {revoking === device.id ? "…" : "Revocar"}
-              </button>
-            </div>
-          ))}
-
-          {devices.length === 0 && (
-            <div style={{ border: "1px dashed var(--line-2)", borderRadius: "12px", padding: "40px", textAlign: "center" }}>
-              <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px", margin: 0 }}>
-                No hay dispositivos registrados
-              </p>
-            </div>
-          )}
+          {devices.length === 0 && <EmptyState title="No hay dispositivos registrados" />}
         </div>
       )}
     </div>

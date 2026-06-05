@@ -2,17 +2,13 @@
 "use client"
 import { useState, useEffect, useRef } from "react"
 import dynamic from "next/dynamic"
+import { getMUK, saveMUK } from "@/lib/muk"
+import { aesEncryptText, aesEncrypt, aesDecrypt, deriveMUK } from "@/lib/crypto"
+import { hexToBytes, bytesToHex, randomBytes } from "@/lib/hex"
+import { apiGet, apiPost, apiDelete, getSrpSalt } from "@/lib/api"
+import { log } from "@/lib/log"
 
-interface Props { token: string; onLogout: () => void; user?: { totp_enabled?: boolean } }
-
-function hexToBytes(hex: string): Uint8Array {
-  const b = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < hex.length; i += 2) b[i / 2] = parseInt(hex.slice(i, i + 2), 16)
-  return b
-}
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("")
-}
+interface Props { onLogout: () => void; user?: { totp_enabled?: boolean } }
 
 // QR generado localmente con canvas
 function QRCode({ value, size = 200 }: { value: string; size?: number }) {
@@ -38,7 +34,7 @@ function QRCode({ value, size = 200 }: { value: string; size?: number }) {
 }
 
 // Importar CSV o JSON
-function ImportCSV({ token, mukHex }: { token: string; mukHex: string }) {
+function ImportCSV({ mukHex }: { mukHex: string }) {
   const [status,   setStatus]   = useState<"idle" | "loading" | "done" | "error">("idle")
   const [imported, setImported] = useState(0)
   const [errors,   setErrors]   = useState(0)
@@ -60,7 +56,7 @@ function ImportCSV({ token, mukHex }: { token: string; mukHex: string }) {
         await importCSV(text)
       }
     } catch (e) {
-      console.error(e)
+      log.error(e)
       setStatus("error")
     }
 
@@ -80,12 +76,10 @@ function ImportCSV({ token, mukHex }: { token: string; mukHex: string }) {
         const nonce = crypto.getRandomValues(new Uint8Array(12))
         const ct    = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, plain)
         const encrypted = { nonce: bytesToHex(nonce), ciphertext: bytesToHex(new Uint8Array(ct)) }
-        const res = await fetch("/api/passwords", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body:    JSON.stringify({ title: pw.title, domain: pw.domain ?? null, entry_type: pw.entry_type ?? "login", encrypted }),
-        })
-        if (res.ok) { ok++ } else { fail++ }
+        try {
+          await apiPost("/api/passwords", { title: pw.title, domain: pw.domain ?? null, entry_type: pw.entry_type ?? "login", encrypted })
+          ok++
+        } catch { fail++ }
       } catch (e) { fail++ }
     }
     setImported(ok); setErrors(fail); setStatus("done")
@@ -142,12 +136,10 @@ function ImportCSV({ token, mukHex }: { token: string; mukHex: string }) {
         let domain: string | null = null
         try { domain = new URL(url).hostname.replace("www.", "") } catch (e) { /* sin dominio */ }
 
-        const res = await fetch("/api/passwords", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body:    JSON.stringify({ title: name || domain || "Importada", domain, entry_type: "login", encrypted }),
-        })
-        if (res.ok) { ok++ } else { fail++ }
+        try {
+          await apiPost("/api/passwords", { title: name || domain || "Importada", domain, entry_type: "login", encrypted })
+          ok++
+        } catch { fail++ }
       } catch (e) { fail++ }
     }
     setImported(ok); setErrors(fail); setStatus("done")
@@ -179,18 +171,17 @@ function ImportCSV({ token, mukHex }: { token: string; mukHex: string }) {
   )
 }
 
-export function Ajustes({ token, onLogout, user }: Props) {
+export function Ajustes({ onLogout, user }: Props) {
   const [section, setSection] = useState<"principal" | "2fa" | "exportar" | "eliminar">("principal")
 
   // Estado 2FA
   const [totpEnabled, setTotpEnabled] = useState(user?.totp_enabled ?? false)
 
   useEffect(() => {
-    fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setTotpEnabled(data.totp_enabled ?? false) })
-      .catch(() => {})
-  }, [token])
+    apiGet<{ totp_enabled?: boolean }>("/api/account/me")
+      .then(data => setTotpEnabled(data.totp_enabled ?? false))
+      .catch(e => log.error("load /me", e))
+  }, [])
 
   // Cambio de contraseña
   const [currentPass, setCurrentPass] = useState("")
@@ -216,46 +207,39 @@ export function Ajustes({ token, onLogout, user }: Props) {
     setSavingPass(true)
     setPassMsg(null)
     try {
-      const oldMukHex = sessionStorage.getItem("rv_muk") ?? localStorage.getItem("rv_muk")
+      const oldMukHex = getMUK()
       if (!oldMukHex) { setPassMsg({ ok: false, text: "Sesión expirada" }); return }
 
-      const srpSalt    = localStorage.getItem("rv_srp_salt") ?? ""
-      const keyMat     = await crypto.subtle.importKey("raw", new TextEncoder().encode(newPass), "PBKDF2", false, ["deriveBits"])
-      const newMukBits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: hexToBytes(srpSalt), iterations: 200000 }, keyMat, 256)
-      const newMukHex  = bytesToHex(new Uint8Array(newMukBits))
+      const srpSalt   = getSrpSalt() ?? ""
+      const newMukHex = await deriveMUK(newPass, srpSalt)
 
-      const pwRes  = await fetch("/api/passwords?limit=1000", { headers: { Authorization: `Bearer ${token}` } })
-      const pwData = await pwRes.json()
+      const pwData = await apiGet<{ data: Array<{ id: string; encrypted: { nonce: string; ciphertext: string } }> }>("/api/passwords?limit=1000")
       const passwords = pwData.data ?? []
 
-      const reEncrypted = []
+      const reEncrypted: Array<{ id: string; encrypted: { nonce: string; ciphertext: string } }> = []
       for (const pw of passwords) {
-        try {
-          const oldKey = await crypto.subtle.importKey("raw", hexToBytes(oldMukHex), { name: "AES-GCM" }, false, ["decrypt"])
-          const plain  = await crypto.subtle.decrypt({ name: "AES-GCM", iv: hexToBytes(pw.encrypted.nonce) }, oldKey, hexToBytes(pw.encrypted.ciphertext))
-          const newKey = await crypto.subtle.importKey("raw", hexToBytes(newMukHex), { name: "AES-GCM" }, false, ["encrypt"])
-          const nonce  = crypto.getRandomValues(new Uint8Array(12))
-          const newCt  = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, newKey, plain)
-          reEncrypted.push({ id: pw.id, encrypted: { nonce: bytesToHex(nonce), ciphertext: bytesToHex(new Uint8Array(newCt)) } })
-        } catch (e) { /* continuar */ }
+        const plain = await aesDecrypt(pw.encrypted, oldMukHex)
+        if (!plain) continue
+        const newCt = await aesEncrypt(plain, newMukHex)
+        plain.fill(0)
+        reEncrypted.push({ id: pw.id, encrypted: newCt })
       }
 
-      const res = await fetch("/api/account/change-password", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ current_password: currentPass, new_password: newPass, new_srp_salt: srpSalt, new_srp_verifier: srpSalt, re_encrypted_passwords: reEncrypted }),
+      await apiPost("/api/account/change-password", {
+        current_password: currentPass,
+        new_password:     newPass,
+        new_srp_salt:     srpSalt,
+        new_srp_verifier: srpSalt,
+        re_encrypted_passwords: reEncrypted,
       })
-      const data = await res.json()
-      if (res.ok) {
-        sessionStorage.setItem("rv_muk", newMukHex)
-        localStorage.setItem("rv_muk", newMukHex)
-        setPassMsg({ ok: true, text: `Contraseña cambiada. ${reEncrypted.length} entradas re-cifradas.` })
-        setCurrentPass(""); setNewPass(""); setNewPass2("")
-      } else {
-        setPassMsg({ ok: false, text: data.error ?? "Error al cambiar la contraseña" })
-      }
+
+      // Solo sessionStorage — la MUK NUNCA va a localStorage
+      saveMUK(newMukHex)
+      setPassMsg({ ok: true, text: `Contraseña cambiada. ${reEncrypted.length} entradas re-cifradas.` })
+      setCurrentPass(""); setNewPass(""); setNewPass2("")
     } catch (e) {
-      setPassMsg({ ok: false, text: "Error al procesar el cambio" })
+      log.error("change password", e)
+      setPassMsg({ ok: false, text: e instanceof Error ? e.message : "Error al procesar el cambio" })
     } finally {
       setSavingPass(false)
     }
@@ -264,11 +248,10 @@ export function Ajustes({ token, onLogout, user }: Props) {
   async function handleSetup2FA() {
     setLoadingQR(true)
     try {
-      const res  = await fetch("/api/auth/2fa/setup", { method: "POST", headers: { Authorization: `Bearer ${token}` } })
-      const data = await res.json()
+      const data = await apiPost<{ qr_code_url: string; manual_key: string }>("/api/auth/2fa/setup")
       setTotp2fa({ qr_url: data.qr_code_url, secret: data.manual_key })
     } catch (e) {
-      console.error(e)
+      log.error("setup 2fa", e)
     } finally {
       setLoadingQR(false)
     }
@@ -277,48 +260,49 @@ export function Ajustes({ token, onLogout, user }: Props) {
   async function handleConfirm2FA() {
     if (!totpCode || totpCode.length !== 6) { setTotp2faMsg({ ok: false, text: "Introduce el código de 6 dígitos" }); return }
     if (!totp2fa?.secret) return
-    const mukHex = sessionStorage.getItem("rv_muk") ?? localStorage.getItem("rv_muk")
+    const mukHex = getMUK()
     if (!mukHex) { setTotp2faMsg({ ok: false, text: "Sesión expirada" }); return }
 
     try {
-      const key   = await crypto.subtle.importKey("raw", hexToBytes(mukHex), { name: "AES-GCM" }, false, ["encrypt"])
-      const nonce = crypto.getRandomValues(new Uint8Array(12))
-      const ct    = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, new TextEncoder().encode(totp2fa.secret))
-      const encryptedSecret = { nonce: bytesToHex(nonce), ciphertext: bytesToHex(new Uint8Array(ct)) }
-
-      const res = await fetch("/api/auth/2fa/confirm", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ totp_code: totpCode, encrypted_secret: encryptedSecret, encrypted_backup_codes: encryptedSecret }),
+      const encryptedSecret = await aesEncryptText(totp2fa.secret, mukHex)
+      await apiPost("/api/auth/2fa/confirm", {
+        totp_code: totpCode,
+        encrypted_secret:       encryptedSecret,
+        encrypted_backup_codes: encryptedSecret,
       })
-      if (res.ok) {
-        setTotpEnabled(true); setTotp2fa(null); setTotpCode("")
-        setTotp2faMsg({ ok: true, text: "2FA activado correctamente" })
-      } else {
-        setTotp2faMsg({ ok: false, text: "Código incorrecto" })
-      }
+      setTotpEnabled(true); setTotp2fa(null); setTotpCode("")
+      setTotp2faMsg({ ok: true, text: "2FA activado correctamente" })
     } catch (e) {
-      setTotp2faMsg({ ok: false, text: "Error al activar 2FA" })
+      log.error("confirm 2fa", e)
+      setTotp2faMsg({ ok: false, text: "Código incorrecto" })
     }
   }
 
   async function handleDisable2FA() {
     if (!confirm("¿Seguro que quieres desactivar el 2FA?")) return
-    const res = await fetch("/api/auth/2fa/disable", { method: "POST", headers: { Authorization: `Bearer ${token}` } })
-    if (res.ok) { setTotpEnabled(false); setTotp2faMsg({ ok: true, text: "2FA desactivado" }) }
-    else { setTotp2faMsg({ ok: false, text: "Error al desactivar 2FA" }) }
+    try {
+      await apiPost("/api/auth/2fa/disable")
+      setTotpEnabled(false)
+      setTotp2faMsg({ ok: true, text: "2FA desactivado" })
+    } catch (e) {
+      log.error("disable 2fa", e)
+      setTotp2faMsg({ ok: false, text: "Error al desactivar 2FA" })
+    }
   }
 
   async function handleDelete() {
     if (confirmText !== "ELIMINAR MI CUENTA") return
     setDeleting(true)
-    const res = await fetch("/api/account/delete", {
-      method:  "DELETE",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ password: deletePass, confirmation: "ELIMINAR MI CUENTA" }),
-    })
-    if (res.ok) onLogout()
-    setDeleting(false)
+    try {
+      await apiDelete("/api/account/delete", {
+        body: { password: deletePass, confirmation: "ELIMINAR MI CUENTA" } as any,
+      } as any)
+      onLogout()
+    } catch (e) {
+      log.error("delete account", e)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const TABS = [
@@ -334,7 +318,7 @@ export function Ajustes({ token, onLogout, user }: Props) {
     color: "var(--ivory)", outline: "none", boxSizing: "border-box",
   }
 
-  const mukForImport = (typeof window !== "undefined" ? sessionStorage.getItem("rv_muk") ?? localStorage.getItem("rv_muk") : "") ?? ""
+  const mukForImport = (typeof window !== "undefined" ? getMUK() : null) ?? ""
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
@@ -475,8 +459,7 @@ export function Ajustes({ token, onLogout, user }: Props) {
             </p>
             <button onClick={async () => {
               try {
-                const res  = await fetch("/api/passwords?limit=1000", { headers: { Authorization: `Bearer ${token}` } })
-                const data = await res.json()
+                const data = await apiGet("/api/passwords?limit=1000")
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
                 const url  = URL.createObjectURL(blob)
                 const a    = document.createElement("a")
@@ -495,7 +478,7 @@ export function Ajustes({ token, onLogout, user }: Props) {
             <p style={{ fontSize: "13.5px", color: "var(--ivory-dim)", margin: 0, lineHeight: "1.6" }}>
               Importa contraseñas desde un archivo CSV o desde un backup JSON de RustVault.
             </p>
-            <ImportCSV token={token} mukHex={mukForImport} />
+            <ImportCSV mukHex={mukForImport} />
           </div>
         </div>
       )}
