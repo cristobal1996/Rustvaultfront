@@ -16,8 +16,14 @@
   --rust-bright:  oklch(0.74 0.14 55);
   --patina:       oklch(0.58 0.06 170);
 
+  /* Tipografías:
+     --font-serif → títulos grandes (Instrument Serif)
+     --font-body  → cuerpo de texto (Crimson Pro)
+     --font-mono  → código y datos técnicos (JetBrains Mono)
+     --font-sans  → alias de --font-body por compatibilidad con código antiguo */
   --font-serif: "Instrument Serif", serif;
-  --font-sans:  "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-body:  "Crimson Pro", Georgia, serif;
+  --font-sans:  var(--font-body);
   --font-mono:  "JetBrains Mono", ui-monospace, monospace;
 }
 
@@ -32,8 +38,11 @@
   }
 
   body {
-    font-family:             var(--font-sans);
+    font-family:             var(--font-body);
     font-weight:             400;
+    /* Crimson Pro queda mejor con un tamaño base ligeramente mayor */
+    font-size:               16px;
+    line-height:             1.55;
     -webkit-font-smoothing:  antialiased;
     overflow-x:              hidden;
   }

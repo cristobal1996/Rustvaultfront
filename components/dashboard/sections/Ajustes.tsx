@@ -191,7 +191,7 @@ export function Ajustes({ onLogout, user }: Props) {
   const [passMsg,     setPassMsg]     = useState<{ ok: boolean; text: string } | null>(null)
 
   // 2FA
-  const [totp2fa,    setTotp2fa]    = useState<{ qr_url: string; secret: string } | null>(null)
+  const [totp2fa,    setTotp2fa]    = useState<{ qr_url: string; secret: string; secret_hex: string; backup_codes: string[] } | null>(null)
   const [totpCode,   setTotpCode]   = useState("")
   const [loadingQR,  setLoadingQR]  = useState(false)
   const [totp2faMsg, setTotp2faMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -248,8 +248,18 @@ export function Ajustes({ onLogout, user }: Props) {
   async function handleSetup2FA() {
     setLoadingQR(true)
     try {
-      const data = await apiPost<{ qr_code_url: string; manual_key: string }>("/api/auth/2fa/setup")
-      setTotp2fa({ qr_url: data.qr_code_url, secret: data.manual_key })
+      const data = await apiPost<{
+        qr_code_url: string;
+        manual_key:  string;
+        secret_hex:  string;
+        backup_codes: string[];
+      }>("/api/auth/2fa/setup")
+      setTotp2fa({
+        qr_url:       data.qr_code_url,
+        secret:       data.manual_key,
+        secret_hex:   data.secret_hex,
+        backup_codes: data.backup_codes,
+      })
     } catch (e) {
       log.error("setup 2fa", e)
     } finally {
@@ -258,23 +268,29 @@ export function Ajustes({ onLogout, user }: Props) {
   }
 
   async function handleConfirm2FA() {
-    if (!totpCode || totpCode.length !== 6) { setTotp2faMsg({ ok: false, text: "Introduce el código de 6 dígitos" }); return }
-    if (!totp2fa?.secret) return
-    const mukHex = getMUK()
-    if (!mukHex) { setTotp2faMsg({ ok: false, text: "Sesión expirada" }); return }
+    if (!totpCode || totpCode.length !== 6) {
+      setTotp2faMsg({ ok: false, text: "Introduce el código de 6 dígitos" })
+      return
+    }
+    if (!totp2fa?.secret_hex) return
 
     try {
-      const encryptedSecret = await aesEncryptText(totp2fa.secret, mukHex)
+      // Enviamos el secret en claro al servidor.
+      // El servidor lo valida con totp-rs antes de guardarlo, y lo
+      // almacena en BD sin cifrar con MUK. Compromiso necesario para
+      // que el servidor pueda validar el código en cada login.
       await apiPost("/api/auth/2fa/confirm", {
-        totp_code: totpCode,
-        encrypted_secret:       encryptedSecret,
-        encrypted_backup_codes: encryptedSecret,
+        secret_hex:   totp2fa.secret_hex,
+        totp_code:    totpCode,
+        backup_codes: totp2fa.backup_codes,
       })
-      setTotpEnabled(true); setTotp2fa(null); setTotpCode("")
+      setTotpEnabled(true)
+      setTotp2fa(null)
+      setTotpCode("")
       setTotp2faMsg({ ok: true, text: "2FA activado correctamente" })
     } catch (e) {
       log.error("confirm 2fa", e)
-      setTotp2faMsg({ ok: false, text: "Código incorrecto" })
+      setTotp2faMsg({ ok: false, text: "Código incorrecto. Verifica la hora de tu dispositivo y vuelve a intentarlo." })
     }
   }
 

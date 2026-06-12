@@ -1,6 +1,6 @@
 // app/layout.tsx
 import type { Metadata } from "next"
-import { Instrument_Serif, Geist, JetBrains_Mono } from "next/font/google"
+import { Instrument_Serif, Crimson_Pro, JetBrains_Mono } from "next/font/google"
 import "./globals.css"
 
 const instrumentSerif = Instrument_Serif({
@@ -11,10 +11,11 @@ const instrumentSerif = Instrument_Serif({
   display:  "swap",
 })
 
-const geist = Geist({
-  weight:   ["300", "400", "500", "600"],
+const crimsonPro = Crimson_Pro({
+  weight:   ["300", "400", "500", "600", "700"],
+  style:    ["normal", "italic"],
   subsets:  ["latin"],
-  variable: "--font-sans",
+  variable: "--font-body",
   display:  "swap",
 })
 
@@ -34,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="es"
-      className={`${instrumentSerif.variable} ${geist.variable} ${jetbrainsMono.variable}`}
+      className={`${instrumentSerif.variable} ${crimsonPro.variable} ${jetbrainsMono.variable}`}
     >
       <body>{children}</body>
     </html>

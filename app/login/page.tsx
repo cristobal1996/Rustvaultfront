@@ -17,11 +17,10 @@ import { Input }  from "@/components/ui/Input"
 import { ErrorMessage } from "@/components/ui/ErrorMessage"
 
 interface LoginResponse {
-  token?:        string
-  user?:         { id: string; email: string }
-  srp_salt?:     string
-  requires_2fa?: boolean
-  temp_token?:   string
+  token:        string
+  user:         { id: string; email: string }
+  srp_salt:     string
+  requires_2fa: boolean
 }
 
 type Step = "credentials" | "totp"
@@ -40,13 +39,12 @@ function detectDeviceName(): string {
 
 export default function Login() {
   const router = useRouter()
-  const [step,      setStep]      = useState<Step>("credentials")
-  const [email,     setEmail]     = useState("")
-  const [password,  setPassword]  = useState("")
-  const [totpCode,  setTotpCode]  = useState("")
-  const [tempToken, setTempToken] = useState("")
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState<string | null>(null)
+  const [step,     setStep]     = useState<Step>("credentials")
+  const [email,    setEmail]    = useState("")
+  const [password, setPassword] = useState("")
+  const [totpCode, setTotpCode] = useState("")
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState<string | null>(null)
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -61,12 +59,14 @@ export default function Login() {
         device_fingerprint: null,
       }, { auth: false })
 
-      if (data.requires_2fa && data.temp_token) {
-        setTempToken(data.temp_token)
+      // Si requiere 2FA, ir a la pantalla del código
+      // (en este caso el backend NO crea sesión, solo nos dice que lo pida)
+      if (data.requires_2fa) {
         setStep("totp")
         return
       }
 
+      // Si no requiere 2FA, login completado
       await completeLogin(data)
     } catch (e) {
       log.error("login failed", e)
@@ -81,6 +81,7 @@ export default function Login() {
     setError(null)
     setLoading(true)
     try {
+      // Reenvía email + password + código TOTP
       const data = await apiPost<LoginResponse>("/api/auth/login", {
         email:              email.trim().toLowerCase(),
         password,

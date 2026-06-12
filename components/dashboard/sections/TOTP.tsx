@@ -1,11 +1,13 @@
 // components/dashboard/sections/TOTP.tsx
 "use client"
 import { useState, useEffect, useRef, useCallback } from "react"
+import { QrCodeIcon } from "@heroicons/react/24/outline"
 import { getMUK } from "@/lib/muk"
 import { aesDecrypt, aesEncryptText, type EncryptedBlob } from "@/lib/crypto"
 import { hexToBytes, bytesToHex } from "@/lib/hex"
 import { apiGet, apiPost, apiDelete } from "@/lib/api"
 import { log } from "@/lib/log"
+import { QrScanner } from "@/components/ui/QrScanner"
 
 interface TOTPCredential {
   id:               string
@@ -144,6 +146,8 @@ export function TOTP() {
   const [parseUrl,     setParseUrl]     = useState("")
   const [showAdd,      setShowAdd]      = useState(false)
   const [parsed,       setParsed]       = useState<Record<string, string> | null>(null)
+  const [showScanner,  setShowScanner]  = useState(false)
+  const [scanError,    setScanError]    = useState<string | null>(null)
 
   const loadCreds = useCallback(async () => {
     setLoading(true)
@@ -160,6 +164,29 @@ export function TOTP() {
       const data = await apiPost<Record<string, string>>("/api/totp/parse", { otpauth_url: parseUrl })
       setParsed(data)
     } catch (e) { log.error("parse otp url", e) }
+  }
+
+  async function handleQrDetected(qrText: string) {
+    setShowScanner(false)
+    setScanError(null)
+
+    // El QR debe contener una URL otpauth://
+    if (!qrText.toLowerCase().startsWith("otpauth://")) {
+      setScanError("El código QR no es un código 2FA válido (debe empezar por otpauth://)")
+      return
+    }
+
+    // Rellenar el campo y parsear automáticamente
+    setParseUrl(qrText)
+    setShowAdd(true)
+
+    try {
+      const data = await apiPost<Record<string, string>>("/api/totp/parse", { otpauth_url: qrText })
+      setParsed(data)
+    } catch (e) {
+      log.error("parse scanned qr", e)
+      setScanError("Error al procesar el código escaneado")
+    }
   }
 
   async function saveTOTP() {
@@ -197,10 +224,20 @@ export function TOTP() {
             Códigos <em style={{ fontStyle: "italic", color: "var(--rust-bright)" }}>2FA</em>
           </h2>
         </div>
-        <button onClick={() => setShowAdd(v => !v)}
-            style={{ background: "var(--rust)", color: "#fff", border: "none", borderRadius: "9px", padding: "9px 14px", fontSize: "13.5px", fontWeight: 500, cursor: "pointer" }}>
-            + Añadir
-          </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <div className="md:hidden">
+            <button onClick={() => { setShowScanner(true); setScanError(null) }}
+                style={{ background: "transparent", color: "var(--ivory)", border: "1px solid var(--line-2)", borderRadius: "9px", padding: "9px 14px", fontSize: "13.5px", fontWeight: 500, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                title="Escanear código QR con la cámara">
+                <QrCodeIcon className="w-4 h-4" />
+                Escanear
+              </button>
+          </div>
+            <button onClick={() => setShowAdd(v => !v)}
+              style={{ background: "var(--rust)", color: "#fff", border: "none", borderRadius: "9px", padding: "9px 14px", fontSize: "13.5px", fontWeight: 500, cursor: "pointer" }}>
+              + Añadir
+            </button>
+        </div>
       </div>
 
       {/* Desbloqueo si no hay key */}
@@ -254,13 +291,22 @@ export function TOTP() {
         </div>
       )}
 
+      {/* Error de escaneo */}
+      {scanError && (
+        <div style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.2)", borderRadius: "8px", padding: "10px 14px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "#f87171", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{scanError}</span>
+          <button onClick={() => setScanError(null)}
+            style={{ background: "transparent", border: "none", color: "#f87171", cursor: "pointer", fontSize: "16px" }}>×</button>
+        </div>
+      )}
+
       {/* Grid de tarjetas */}
       {loading ? (
         <div style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>Cargando…</div>
       ) : creds.length === 0 ? (
         <div style={{ border: "1px dashed var(--line-2)", borderRadius: "12px", padding: "40px", textAlign: "center" }}>
           <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "12px", margin: "0 0 8px" }}>Sin códigos 2FA guardados</p>
-          <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "11px", margin: 0 }}>Añade el QR de GitHub, Google, AWS… escaneando la URL otpauth://</p>
+          <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: "11px", margin: 0 }}>Escanea un QR con la cámara o pega la URL otpauth://</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-[14px]">
@@ -273,6 +319,15 @@ export function TOTP() {
             }} />
           ))}
         </div>
+      )}
+
+      {/* Modal del escáner QR */}
+      {showScanner && (
+        <QrScanner
+          onDetect={handleQrDetected}
+          onClose={() => setShowScanner(false)}
+          hint="Apunta a un código QR de 2FA (otpauth://)"
+        />
       )}
     </div>
   )

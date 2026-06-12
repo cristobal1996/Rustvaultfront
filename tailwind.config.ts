@@ -22,9 +22,17 @@ const config: Config = {
         patina:      "var(--patina)",
       },
       fontFamily: {
+        // 'serif' → títulos grandes (Instrument Serif)
         serif: ["var(--font-serif)", "serif"],
-        sans:  ["var(--font-sans)",  "ui-sans-serif", "system-ui", "sans-serif"],
-        mono:  ["var(--font-mono)",  "ui-monospace", "monospace"],
+
+        // 'sans' es ALIAS de 'body' por compatibilidad: el código
+        // existente que usa `font-sans` seguirá funcionando,
+        // pero ahora apunta a Crimson Pro (serif clásica) en lugar
+        // de Geist (sans-serif).
+        sans:  ["var(--font-body)", "Georgia", "serif"],
+        body:  ["var(--font-body)", "Georgia", "serif"],
+
+        mono:  ["var(--font-mono)", "ui-monospace", "monospace"],
       },
       maxWidth: {
         container: "1320px",

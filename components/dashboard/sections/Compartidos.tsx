@@ -18,8 +18,9 @@ interface InboxItem {
   title_hint:         string | null
   message:            string | null
   permission:         string
+  share_mode:         "permanent" | "temporary" | "one_shot"
   status:             string
-  expires_at:         string
+  expires_at:         string | null
   created_at:         string
 }
 
@@ -28,8 +29,9 @@ interface SentItem {
   recipient_email_hint:  string
   title_hint:            string | null
   permission:            string
+  share_mode:            "permanent" | "temporary" | "one_shot"
   status:                string
-  expires_at:            string
+  expires_at:            string | null
   created_at:            string
 }
 
@@ -126,6 +128,8 @@ export function Compartidos() {
   const [message,      setMessage]      = useState("")
   const [sending,      setSending]      = useState(false)
   const [sendMsg,      setSendMsg]      = useState<{ ok: boolean; text: string } | null>(null)
+  const [shareMode,       setShareMode]       = useState<"permanent" | "temporary" | "one_shot">("permanent")
+  const [durationMinutes, setDurationMinutes] = useState<number>(1440) // 24h por defecto
 
   // Mi código de invitación
   const [myCode,     setMyCode]     = useState<string | null>(null)
@@ -137,13 +141,58 @@ export function Compartidos() {
   const [viewItem,    setViewItem]    = useState<InboxItem | null>(null)
   const [viewContent, setViewContent] = useState<Record<string, string> | string | null>(null)
   const [accepting,   setAccepting]   = useState(false)
+  const [viewing,     setViewing]     = useState<string | null>(null)   // id del item siendo procesado
   const [actionMsg,   setActionMsg]   = useState<{ ok: boolean; text: string } | null>(null)
+
+  // Tick para forzar re-render del contador "Caduca en X"
+  // (no afecta a la lógica, solo a lo que se muestra)
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     if (getToken()) {
       loadAll()
       ensureKeysExist()
     }
+  }, [])
+
+  // ── Auto-actualización de expiradas ─────────────────────────────
+  // Cada 10 segundos:
+  //  1. Filtra localmente las que ya hayan expirado (frontend)
+  //  2. Si había alguna a punto de expirar, recarga del backend para
+  //     limpiar también las que aún están en BD
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now()
+      let hadExpired = false
+
+      setInbox(prev => {
+        const filtered = prev.filter(item => {
+          if (!item.expires_at) return true                            // permanente
+          if (item.share_mode === "permanent") return true             // permanente
+          const expiresMs = new Date(item.expires_at).getTime()
+          if (expiresMs <= now) {
+            hadExpired = true
+            return false
+          }
+          return true
+        })
+        return filtered.length === prev.length ? prev : filtered
+      })
+
+      // Si alguna expiró localmente, recargar del backend para sincronizar
+      if (hadExpired) {
+        loadAll()
+      }
+    }
+    const id = setInterval(tick, 10_000)
+    // Ejecutar también inmediatamente al montar
+    tick()
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function ensureKeysExist() {
@@ -246,12 +295,20 @@ export function Compartidos() {
           title_hint:              pw.title,
           message:                 message.trim() || null,
           permission,
+          share_mode:              shareMode,
+          duration_minutes:        shareMode === "temporary" ? durationMinutes : undefined,
         })
-        setSendMsg({ ok: true, text: `Contraseña compartida con ${foundUser.email_hint}` })
+        const modeMsg =
+          shareMode === "permanent" ? ""
+          : shareMode === "temporary" ? ` (caduca en ${formatDuration(durationMinutes)})`
+          : " (un solo uso)"
+        setSendMsg({ ok: true, text: `Contraseña compartida con ${foundUser.email_hint}${modeMsg}` })
         setFoundUser(null)
         setCodeInput("")
         setMessage("")
         setSelectedPw("")
+        setShareMode("permanent")
+        setDurationMinutes(1440)
         loadAll()
       } catch (err) {
         throw new Error(err instanceof Error ? err.message : "Error al compartir")
@@ -262,24 +319,41 @@ export function Compartidos() {
   }
 
   async function viewShared(item: InboxItem) {
+    // Guardia anti doble-click: si ya estamos procesando este item, ignorar
+    if (viewing === item.id) return
+    setViewing(item.id)
+
     setViewItem(item)
     setViewContent(null)
     setActionMsg(null)
 
-    if (!mukHex) return
+    if (!mukHex) {
+      setActionMsg({ ok: false, text: "Sesión expirada" })
+      setViewing(null)
+      return
+    }
 
     try {
       const data = await apiGet<any>(`/api/sharing/${item.id}/view`)
       const blob = data.encrypted
-      if (!blob?.ephemeral_pub) return
+      if (!blob?.ephemeral_pub) {
+        setActionMsg({ ok: false, text: "La compartición no tiene contenido cifrado" })
+        return
+      }
 
       // 1. Obtener clave privada cifrada del perfil
       const profile = await apiGet<any>("/api/account/me")
-      if (!profile.encrypted_priv_key) return
+      if (!profile.encrypted_priv_key) {
+        setActionMsg({ ok: false, text: "No tienes clave privada registrada" })
+        return
+      }
 
       // 2. Descifrar clave privada con MUK
       const privKeyBytes = await aesDecrypt(profile.encrypted_priv_key, mukHex)
-      if (!privKeyBytes) return
+      if (!privKeyBytes) {
+        setActionMsg({ ok: false, text: "No se pudo descifrar la clave privada" })
+        return
+      }
 
       // 3. Importar clave privada PKCS8
       const privateKey = await crypto.subtle.importKey(
@@ -317,9 +391,43 @@ export function Compartidos() {
           setViewContent(new TextDecoder().decode(plain))
         }
       }
+
+      // NOTA: si era one_shot, el backend YA borró la fila. Pero NO la
+      // quitamos de la lista local hasta que el usuario cierre la vista,
+      // porque el contenido se renderiza dentro del map de inbox.
+      // En cambio, marcamos el item como "ya visto" (status='viewed')
+      // localmente para que al volver a pulsar Ver no se intente otra vez.
+      if (item.share_mode === "one_shot") {
+        setInbox(prev => prev.map(i =>
+          i.id === item.id ? { ...i, status: "viewed" } : i
+        ))
+      }
     } catch (e) {
       log.error("viewShared error:", e)
+      // Mensaje específico según el error del backend
+      const msg = e instanceof Error ? e.message : "Error al ver la contraseña"
+      if (msg.includes("vista anteriormente") || msg.includes("ya no está disponible")) {
+        // La compartición ya no existe (one_shot ya vista o expirada).
+        // Quitarla de la lista local.
+        setInbox(prev => prev.filter(i => i.id !== item.id))
+        setViewItem(null)
+        setActionMsg({ ok: false, text: msg })
+      } else {
+        setActionMsg({ ok: false, text: msg })
+      }
+    } finally {
+      setViewing(null)
     }
+  }
+
+  // Cuando el usuario cierra la vista de un one_shot, lo quitamos de la lista
+  function closeView() {
+    if (viewItem?.share_mode === "one_shot") {
+      const idToRemove = viewItem.id
+      setInbox(prev => prev.filter(i => i.id !== idToRemove))
+    }
+    setViewItem(null)
+    setViewContent(null)
   }
 
   async function acceptShare(id: string) {
@@ -392,10 +500,13 @@ export function Compartidos() {
       const encrypted = await aesEncrypt(plain, mukHex)
 
       // Extraer el dominio del JSON descifrado para que la extensión
-      // pueda autocompletar después
+      // pueda autocompletar después.
+      // IMPORTANTE: `plain` es Uint8Array, hay que decodificarlo a string
+      // antes de pasar a JSON.parse (si no, falla silenciosamente).
       let domain: string | null = null
       try {
-        const content = JSON.parse(plain) as { url?: string }
+        const plainText = new TextDecoder().decode(plain)
+        const content = JSON.parse(plainText) as { url?: string }
         if (content.url) {
           domain = extractDomain(content.url)
         }
@@ -529,24 +640,56 @@ export function Compartidos() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center flex-wrap gap-2 mb-1">
                     <span className="text-sm font-medium text-ivory">{item.title_hint ?? "Contraseña compartida"}</span>
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
-                      style={{ color: statusColor(item.status), border: `1px solid ${statusColor(item.status)}33` }}>
-                      {item.permission}
-                    </span>
+                    {item.share_mode === "permanent" && (
+                      <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
+                        style={{ color: "var(--muted)", border: "1px solid var(--line-2)" }}>
+                        Permanente
+                      </span>
+                    )}
+                    {item.share_mode === "temporary" && (
+                      <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
+                        style={{ color: "var(--rust-bright)", border: "1px solid color-mix(in oklab, var(--rust) 40%, transparent)" }}>
+                        ⏱ Temporal
+                      </span>
+                    )}
+                    {item.share_mode === "one_shot" && (
+                      <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
+                        style={{ color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}>
+                        👁 Un solo uso
+                      </span>
+                    )}
                   </div>
                   <div className="font-mono text-[11px] text-muted">
-                    De {item.sender_email_hint} · Caduca {new Date(item.expires_at).toLocaleDateString("es")}
+                    De {item.sender_email_hint}
+                    {item.expires_at && (
+                      <> · {item.share_mode === "one_shot"
+                        ? `Se borra al verla (caduca en ${timeUntilExpiry(item.expires_at)})`
+                        : `Caduca en ${timeUntilExpiry(item.expires_at)}`}
+                      </>
+                    )}
                   </div>
                   {item.message && (
                     <p className="text-xs text-ivory-dim mt-2 italic break-words">"{item.message}"</p>
                   )}
                 </div>
                 <div className="flex gap-[6px] flex-shrink-0 flex-wrap sm:flex-nowrap">
-                  <button onClick={() => viewShared(item)}
-                    className="bg-transparent border border-line-2 rounded-md px-[10px] py-[6px] text-xs text-ivory-dim cursor-pointer hover:text-ivory transition-colors">
-                    Ver
-                  </button>
-                  {item.permission === "copy" && (
+                  {(() => {
+                    const isExpired = item.expires_at != null
+                      && item.share_mode !== "permanent"
+                      && new Date(item.expires_at).getTime() <= Date.now()
+                    return (
+                      <button onClick={() => viewShared(item)}
+                        disabled={viewing === item.id || isExpired}
+                        title={isExpired ? "Esta compartición ha expirado" : ""}
+                        className="bg-transparent border border-line-2 rounded-md px-[10px] py-[6px] text-xs text-ivory-dim cursor-pointer hover:text-ivory transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        {viewing === item.id ? "…" :
+                         isExpired ? "Expirada" :
+                         (item.share_mode === "one_shot" ? "Ver (única vez)" : "Ver")}
+                      </button>
+                    )
+                  })()}
+                  {/* Solo las permanentes con permiso "copy" se pueden aceptar */}
+                  {item.share_mode === "permanent" && item.permission === "copy" && (
                     <button onClick={() => acceptShare(item.id)} disabled={accepting}
                       className="bg-rust text-white border-none rounded-md px-3 py-[6px] text-xs cursor-pointer hover:bg-rust-bright transition-colors disabled:opacity-50">
                       {accepting ? "…" : "Aceptar"}
@@ -562,7 +705,28 @@ export function Compartidos() {
               {/* Vista del contenido */}
               {viewItem?.id === item.id && viewContent && (
                 <div style={{ marginTop: "12px", padding: "14px 16px", background: "var(--bg)", borderRadius: "10px", border: "1px solid var(--line-2)" }}>
-                  <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase", color: "var(--muted)", margin: "0 0 12px" }}>Contraseña compartida</p>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase", color: "var(--muted)", margin: 0 }}>
+                      Contraseña compartida
+                    </p>
+                    <button onClick={closeView}
+                      style={{ background: "transparent", border: "1px solid var(--line-2)", borderRadius: "6px", padding: "4px 10px", fontSize: "11px", color: "var(--muted)", cursor: "pointer", fontFamily: "var(--font-mono)" }}>
+                      Cerrar
+                    </button>
+                  </div>
+
+                  {/* Aviso para one_shot */}
+                  {viewItem.share_mode === "one_shot" && (
+                    <div style={{
+                      marginBottom: "12px", padding: "8px 12px",
+                      background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.25)",
+                      borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "10px",
+                      color: "#f87171", lineHeight: 1.5,
+                    }}>
+                      ⚠ Esta contraseña es de un solo uso. Cópiala ahora, ya no podrás verla de nuevo.
+                    </div>
+                  )}
+
                   {typeof viewContent === "string" ? (
                     <pre style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--ivory-dim)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{viewContent}</pre>
                   ) : (
@@ -618,9 +782,24 @@ export function Compartidos() {
           ) : sent.map(item => (
             <div key={item.id} style={{ border: "1px solid var(--line)", borderRadius: "10px", padding: "14px 16px", background: "var(--bg-elev)", display: "flex", alignItems: "center", gap: "12px" }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: "14px", fontWeight: 500, color: "var(--ivory)", marginBottom: "3px" }}>{item.title_hint ?? "Contraseña"}</div>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginBottom: "3px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--ivory)" }}>{item.title_hint ?? "Contraseña"}</span>
+                  {item.share_mode === "temporary" && (
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase" as const, color: "var(--rust-bright)", border: "1px solid color-mix(in oklab, var(--rust) 40%, transparent)", padding: "2px 6px", borderRadius: "4px" }}>
+                      ⏱ Temporal
+                    </span>
+                  )}
+                  {item.share_mode === "one_shot" && (
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase" as const, color: "#f87171", border: "1px solid rgba(220,38,38,0.4)", padding: "2px 6px", borderRadius: "4px" }}>
+                      👁 Un solo uso
+                    </span>
+                  )}
+                </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--muted)" }}>
-                  Para {item.recipient_email_hint} · {item.permission}
+                  Para {item.recipient_email_hint}
+                  {item.expires_at && item.share_mode !== "permanent" && (
+                    <> · Caduca en {timeUntilExpiry(item.expires_at)}</>
+                  )}
                 </div>
               </div>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1px", textTransform: "uppercase", color: statusColor(item.status), padding: "3px 8px", border: `1px solid ${statusColor(item.status)}33`, borderRadius: "4px" }}>
@@ -697,27 +876,6 @@ export function Compartidos() {
             </div>
           )}
 
-          {/* Permiso */}
-          {foundUser && (
-            <div>
-              <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "8px" }}>
-                Permiso
-              </label>
-              <div style={{ display: "flex", gap: "8px" }}>
-                {[
-                  { id: "view" as const,  label: "Solo ver",     desc: "Puede ver temporalmente sin guardar" },
-                  { id: "copy" as const,  label: "Copiar",       desc: "Puede guardarla como suya" },
-                ].map(p => (
-                  <button key={p.id} onClick={() => setPermission(p.id)}
-                    style={{ flex: 1, padding: "10px", border: `1px solid ${permission === p.id ? "var(--rust)" : "var(--line-2)"}`, borderRadius: "8px", background: permission === p.id ? "color-mix(in oklab, var(--rust) 10%, transparent)" : "transparent", cursor: "pointer", textAlign: "left" as const }}>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1px", textTransform: "uppercase" as const, color: permission === p.id ? "var(--rust-bright)" : "var(--muted)" }}>{p.label}</div>
-                    <div style={{ fontSize: "11px", color: "var(--ivory-dim)", marginTop: "2px" }}>{p.desc}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Mensaje opcional */}
           {foundUser && (
             <div>
@@ -726,6 +884,56 @@ export function Compartidos() {
               </label>
               <input value={message} onChange={e => setMessage(e.target.value)}
                 placeholder="Aquí tienes las credenciales…" style={inp} />
+            </div>
+          )}
+
+          {/* Modo de compartir */}
+          {foundUser && (
+            <div>
+              <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "8px" }}>
+                Modo de compartir
+              </label>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {[
+                  { id: "permanent" as const, label: "Permanente",  desc: "El destinatario puede guardarla en sus contraseñas" },
+                  { id: "temporary" as const, label: "Temporal",    desc: "Caduca y se elimina automáticamente" },
+                  { id: "one_shot"  as const, label: "Un solo uso", desc: "Se elimina al verla por primera vez (máx 7 días)" },
+                ].map(m => (
+                  <button key={m.id} onClick={() => setShareMode(m.id)} type="button"
+                    style={{
+                      padding: "10px 12px",
+                      border: `1px solid ${shareMode === m.id ? "var(--rust)" : "var(--line-2)"}`,
+                      borderRadius: "8px",
+                      background: shareMode === m.id ? "color-mix(in oklab, var(--rust) 10%, transparent)" : "transparent",
+                      cursor: "pointer",
+                      textAlign: "left" as const,
+                    }}>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1px", textTransform: "uppercase" as const, color: shareMode === m.id ? "var(--rust-bright)" : "var(--muted)" }}>
+                      {m.label}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--ivory-dim)", marginTop: "2px" }}>
+                      {m.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              {/* Selector de duración solo si es temporal */}
+              {shareMode === "temporary" && (
+                <div style={{ marginTop: "10px" }}>
+                  <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", letterSpacing: "1.2px", textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: "6px" }}>
+                    Caducidad
+                  </label>
+                  <select value={durationMinutes} onChange={e => setDurationMinutes(Number(e.target.value))}
+                    style={{ ...inp, maxWidth: "100%", cursor: "pointer" }}>
+                    <option value={15}>15 minutos</option>
+                    <option value={60}>1 hora</option>
+                    <option value={1440}>24 horas</option>
+                    <option value={10080}>7 días</option>
+                    <option value={43200}>30 días</option>
+                  </select>
+                </div>
+              )}
             </div>
           )}
 
@@ -855,4 +1063,27 @@ function formatPasswordOption(title: string, domain: string | null): string {
   }
 
   return label
+}
+
+// Formatea minutos a un texto legible: "15 minutos", "1 hora", "24 horas", "7 días"...
+function formatDuration(minutes: number): string {
+  if (minutes < 60)        return `${minutes} minuto${minutes !== 1 ? "s" : ""}`
+  if (minutes < 1440)      return `${minutes / 60} hora${minutes / 60 !== 1 ? "s" : ""}`
+  const days = minutes / 1440
+  return `${days} día${days !== 1 ? "s" : ""}`
+}
+
+// Calcula cuánto falta para que expire una compartición (o null si no caduca)
+function timeUntilExpiry(expiresAt: string | null): string | null {
+  if (!expiresAt) return null
+  const ms = new Date(expiresAt).getTime() - Date.now()
+  if (ms <= 0) return "expirada"
+  const secs  = Math.floor(ms / 1000)
+  if (secs < 60)  return `${secs} s`
+  const mins  = Math.floor(secs / 60)
+  if (mins < 60)  return `${mins} min`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} h`
+  const days = Math.floor(hours / 24)
+  return `${days} día${days !== 1 ? "s" : ""}`
 }

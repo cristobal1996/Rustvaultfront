@@ -8,7 +8,7 @@ import {
   CheckCircleIcon, ArrowLeftIcon,
 } from "@heroicons/react/24/outline"
 
-import { apiPost } from "@/lib/api"
+import { apiPost, ApiError } from "@/lib/api"
 import { log } from "@/lib/log"
 
 import { Header } from "@/components/Header"
@@ -27,6 +27,39 @@ export default function EliminarCuenta() {
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState<string | null>(null)
 
+  // Valida email + código en el servidor SIN borrar nada.
+  // Si son correctos, avanza a la pantalla de confirmación.
+  // Si no, muestra error claro y se queda en el formulario.
+  async function handleContinue() {
+    setError(null)
+
+    if (!email.trim() || !emergencyCode.trim()) {
+      setError("Rellena ambos campos")
+      return
+    }
+
+    setLoading(true)
+    try {
+      await apiPost("/api/auth/recover/verify", {
+        email:          email.trim().toLowerCase(),
+        emergency_code: emergencyCode.trim().toUpperCase(),
+      }, { auth: false })
+
+      // Verificación OK → mostrar confirmación
+      setStep("confirm")
+    } catch (e) {
+      log.error("verify emergency code failed", e)
+      if (e instanceof ApiError && e.status === 401) {
+        setError("El email o el código de emergencia no son correctos. Revisa que has copiado el código tal y como te lo dimos al registrarte.")
+      } else {
+        setError("No se pudo verificar el código. Inténtalo de nuevo en unos segundos.")
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // El usuario ya pasó la verificación previa, aquí solo borramos
   async function handleConfirm() {
     setError(null)
     setLoading(true)
@@ -39,7 +72,7 @@ export default function EliminarCuenta() {
       setStep("done")
     } catch (e) {
       log.error("emergency recovery failed", e)
-      setError("Email o código de emergencia incorrectos")
+      setError("Algo ha salido mal al eliminar la cuenta. Vuelve a intentarlo.")
       setStep("form")
     } finally {
       setLoading(false)
@@ -110,18 +143,12 @@ export default function EliminarCuenta() {
                 </div>
 
                 <Button
-                  onClick={() => {
-                    if (!email.trim() || !emergencyCode.trim()) {
-                      setError("Rellena ambos campos")
-                      return
-                    }
-                    setError(null)
-                    setStep("confirm")
-                  }}
+                  onClick={handleContinue}
+                  disabled={loading}
                   variant="danger"
                   className="bg-[#ef4444] text-white border-[#ef4444] hover:bg-[#dc2626]"
                 >
-                  Continuar →
+                  {loading ? "Verificando…" : "Continuar →"}
                 </Button>
               </div>
 
@@ -159,6 +186,8 @@ export default function EliminarCuenta() {
                   <strong>Esta acción no se puede deshacer.</strong>
                 </p>
               </div>
+
+              {error && <ErrorMessage>{error}</ErrorMessage>}
 
               <div className="flex gap-2">
                 <button
