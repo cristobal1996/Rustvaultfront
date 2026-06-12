@@ -16,6 +16,7 @@ interface InboxItem {
   id:                 string
   sender_email_hint:  string
   title_hint:         string | null
+  domain_hint:        string | null
   message:            string | null
   permission:         string
   share_mode:         "permanent" | "temporary" | "one_shot"
@@ -28,6 +29,7 @@ interface SentItem {
   id:                    string
   recipient_email_hint:  string
   title_hint:            string | null
+  domain_hint:           string | null
   permission:            string
   share_mode:            "permanent" | "temporary" | "one_shot"
   status:                string
@@ -293,6 +295,7 @@ export function Compartidos() {
           recipient_invite_code:   codeInput.trim(),
           encrypted_for_recipient: encryptedForRecipient,
           title_hint:              pw.title,
+          domain_hint:             pw.domain,
           message:                 message.trim() || null,
           permission,
           share_mode:              shareMode,
@@ -731,6 +734,12 @@ export function Compartidos() {
                     <pre style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--ivory-dim)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{viewContent}</pre>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {viewItem?.domain_hint && (
+                        <Row label="Dominio" value={viewItem.domain_hint}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--rust-bright)", wordBreak: "break-all" }}>{viewItem.domain_hint}</span>
+                          <CopyBtn text={viewItem.domain_hint} />
+                        </Row>
+                      )}
                       {viewContent.url && (
                         <Row label="URL" value={viewContent.url}>
                           <a href={viewContent.url.startsWith("http") ? viewContent.url : `https://${viewContent.url}`}
