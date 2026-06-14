@@ -3,6 +3,31 @@
 // Decisión de seguridad: el token vive en sessionStorage como la MUK,
 // para que al cerrar pestaña se borre todo y se minimice la exposición a XSS.
 
+/**
+ * URL base de la API.
+ *
+ * - En DESARROLLO: queda vacía, las llamadas usan rutas relativas
+ *   (`/api/...`) y el rewrite de Next.js (next.config.ts) las proxy-ea
+ *   al backend local (`http://192.168.0.37:8080`).
+ *
+ * - En PRODUCCIÓN: se define como variable de entorno en Vercel,
+ *   apuntando al backend desplegado (p.ej. `https://rustvault.onrender.com`).
+ *   El rewrite del next.config.ts queda desactivado en producción.
+ *
+ * Variable: NEXT_PUBLIC_API_BASE
+ * Ejemplo:  https://rustvault-backend.onrender.com
+ */
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? ""
+
+/** Combina la URL base con el path sin generar doble barra. */
+function fullUrl(path: string): string {
+  if (!API_BASE) return path
+  if (path.startsWith("http://") || path.startsWith("https://")) return path
+  const base = API_BASE.replace(/\/+$/, "")     // sin barra final
+  const p    = path.startsWith("/") ? path : `/${path}`
+  return `${base}${p}`
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string, public body?: unknown) {
     super(message)
@@ -36,7 +61,7 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
     if (token) finalHeaders["Authorization"] = `Bearer ${token}`
   }
 
-  const res = await fetch(path, { ...rest, body: finalBody, headers: finalHeaders })
+  const res = await fetch(fullUrl(path), { ...rest, body: finalBody, headers: finalHeaders })
 
   if (res.status === 204) return undefined as T
 
