@@ -652,13 +652,13 @@ export function Compartidos() {
                     {item.share_mode === "temporary" && (
                       <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
                         style={{ color: "var(--rust-bright)", border: "1px solid color-mix(in oklab, var(--rust) 40%, transparent)" }}>
-                        ⏱ Temporal
+                         Temporal
                       </span>
                     )}
                     {item.share_mode === "one_shot" && (
                       <span className="font-mono text-[9px] uppercase tracking-[1px] px-[6px] py-[2px] rounded"
                         style={{ color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}>
-                        👁 Un solo uso
+                         Un solo uso
                       </span>
                     )}
                   </div>
@@ -726,7 +726,7 @@ export function Compartidos() {
                       borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "10px",
                       color: "#f87171", lineHeight: 1.5,
                     }}>
-                      ⚠ Esta contraseña es de un solo uso. Cópiala ahora, ya no podrás verla de nuevo.
+                       Esta contraseña es de un solo uso. Cópiala ahora, ya no podrás verla de nuevo.
                     </div>
                   )}
 
@@ -795,12 +795,12 @@ export function Compartidos() {
                   <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--ivory)" }}>{item.title_hint ?? "Contraseña"}</span>
                   {item.share_mode === "temporary" && (
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase" as const, color: "var(--rust-bright)", border: "1px solid color-mix(in oklab, var(--rust) 40%, transparent)", padding: "2px 6px", borderRadius: "4px" }}>
-                      ⏱ Temporal
+                       Temporal
                     </span>
                   )}
                   {item.share_mode === "one_shot" && (
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: "9px", letterSpacing: "1px", textTransform: "uppercase" as const, color: "#f87171", border: "1px solid rgba(220,38,38,0.4)", padding: "2px 6px", borderRadius: "4px" }}>
-                      👁 Un solo uso
+                       Un solo uso
                     </span>
                   )}
                 </div>
